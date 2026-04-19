@@ -455,22 +455,34 @@ audio{width:100%;margin-top:10px;border-radius:6px;}
         <span class="wakelock-badge off" id="wakelockBadge">🔒 WakeLock off</span>
       </div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
-        <button id="startRecBtn" class="btn-green">🎙 Start Recording</button>
+        <button id="startRecBtn" class="btn-green" disabled>🎙 Start Recording</button>
         <button id="stopRecBtn"  disabled>⏹ Stop</button>
         <button id="snapNowBtn"  class="btn-amber" disabled title="Save the most recent 10s of audio immediately">📸 Save 10s Now</button>
       </div>
 
       <!-- Periodic save row -->
-      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 14px;background:#0f1a30;border-radius:6px;margin-bottom:12px;">
-        <label class="toggle" title="Automatically save the most recent 10s of audio at a regular interval">
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 14px;background:#0f1a30;border-radius:6px;margin-bottom:8px;">
+        <label class="toggle" title="Automatically save a 10s audio snapshot at a regular interval, regardless of detection state">
           <input type="checkbox" id="periodicToggle">
           <span class="toggle-slider"></span>
         </label>
-        <span style="font-size:.88em;">Auto-save 10s every</span>
+        <span style="font-size:.88em;">Auto-save every</span>
         <input type="number" id="periodicIntervalInput" value="30" min="1" max="1440"
           style="width:64px;background:#1a2a4e;color:#e0e0e0;border:1px solid #2a3a5e;border-radius:4px;padding:4px 8px;font-size:.9em;text-align:right;">
-        <span style="font-size:.88em;">minutes</span>
+        <span style="font-size:.88em;">min</span>
         <span style="font-size:.78em;color:#555;" id="periodicNextLabel">— disabled —</span>
+      </div>
+
+      <!-- Audio save toggle row -->
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 14px;background:#0f1a30;border-radius:6px;margin-bottom:12px;">
+        <label class="toggle" title="When OFF, only timestamps, diagnostics and plot data are saved — no audio blobs. Takes effect for subsequent events immediately.">
+          <input type="checkbox" id="saveAudioToggle" checked>
+          <span class="toggle-slider"></span>
+        </label>
+        <span style="font-size:.88em;">Save audio recordings</span>
+        <span style="font-size:.76em;color:#555;margin-left:4px;">
+          (when OFF: saves timestamps + diagnostics only, no audio blobs)
+        </span>
       </div>
 
       <div class="status info active" style="margin-top:0" id="recStatusMsg">
@@ -648,6 +660,7 @@ audio{width:100%;margin-top:10px;border-radius:6px;}
 <!-- ══════════════════════════════════════════════════════════════
      WORKER DSP SOURCE (shared — file analysis + recording)
      ══════════════════════════════════════════════════════════════ -->
+<script src="src/utils.js"></script>
 <script src="src/dsp.js"       type="text/plain" id="workerSrc"></script>
 <script src="src/worklet.js"   type="text/plain" id="workletSrc"></script>
 <script src="src/idb.js"></script>

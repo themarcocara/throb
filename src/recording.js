@@ -199,15 +199,20 @@ function onWorkletMessage(e) {
 async function saveAudioSnap(m, reason) {
     try {
         var snapArr = new Float32Array(m.audioSnap);
-        var wavBlob = pcmToWav(snapArr, SR);
-        var audioId = await idbAdd("audio",{
-            session_id:    sessionId,
-            pcm_blob:      wavBlob,
-            duration_s:    snapArr.length / SR,
-            sample_rate:   SR,
-            wall_clock_iso: m.wallClockIso,
-            reason:        reason,
-        });
+        // Respect the "save audio" toggle — when off, store null and skip audio blob
+        var saveAudio = !$("saveAudioToggle") || $("saveAudioToggle").checked;
+        var wavBlob   = saveAudio ? pcmToWav(snapArr, SR) : null;
+        var audioId   = null;
+        if (saveAudio) {
+            audioId = await idbAdd("audio",{
+                session_id:    sessionId,
+                pcm_blob:      wavBlob,
+                duration_s:    snapArr.length / SR,
+                sample_rate:   SR,
+                wall_clock_iso: m.wallClockIso,
+                reason:        reason,
+            });
+        }
 
         // Compute visualization data via DSP worker and store it
         var vizId = null;
@@ -258,8 +263,8 @@ async function saveAudioSnap(m, reason) {
             wall_clock_iso:        m.wallClockIso,
             wall_clock_ms:         m.wallMs,
             label:                 reason,
-            bpm:                   +(m.bpm||0).toFixed(1),
-            strength:              +(m.strength||0).toFixed(4),
+            bpm:                   +(m.bpm||m.liveBpm||0).toFixed(1),
+            strength:              +(m.strength||m.liveStrength||0).toFixed(4),
             masking_detected:      m.masking_detected||false,
             masking_duration_s:    m.masking_duration_s||0,
             mask_end_estimate:     m.mask_end_estimate||null,
@@ -270,6 +275,15 @@ async function saveAudioSnap(m, reason) {
             audio_id:              audioId,
             viz_id:                vizId,
             duration_s:            snapArr.length / SR,
+            // Live detection state at the moment of this snapshot
+            live_state:            m.liveState||null,
+            live_confidence:       +(m.liveConf||0).toFixed(4),
+            live_strength:         +(m.liveStrength||0).toFixed(4),
+            live_bpm:              +(m.liveBpm||0).toFixed(1),
+            live_mask_factor:      +(m.liveMaskFactor||0).toFixed(4),
+            live_ctx_masked:       m.liveCtxMasked||0,
+            live_throb_detected:   m.liveDetected||false,
+            audio_saved:           saveAudio,
         };
         await idbAdd("events", eventRec);
         if($("panelRec").classList.contains("active")){
@@ -353,14 +367,19 @@ async function loadEventLog() {
             var dateStr=dt.toLocaleDateString()+" "+dt.toLocaleTimeString();
             var maskBadge=ev.masking_detected
                 ?"<span class='badge badge-amber'>Masked "+ev.masking_duration_s.toFixed(0)+"s</span>"
-                :"<span class='badge badge-grey'>None</span>";
+                :(ev.live_ctx_masked?"<span class='badge badge-grey' title='Mid-band noise present'>Noise</span>":"<span class='badge badge-grey'>None</span>");
             var dur=ev.duration_s?(ev.duration_s.toFixed(1)+"s"):"—";
-            var conf=ev.strength?(ev.strength.toFixed(3)):"—";
-            var bpm=ev.bpm?ev.bpm.toFixed(0):"—";
+            // For periodic/manual use live values; for detection events use detection values
+            var useConf = (ev.label==="periodic"||ev.label==="manual") ? ev.live_confidence : ev.strength;
+            var useBpm  = (ev.label==="periodic"||ev.label==="manual") ? ev.live_bpm        : ev.bpm;
+            var conf=useConf?(+useConf).toFixed(3):"—";
+            var bpm=useBpm?(+useBpm).toFixed(0):"—";
+            // Audio saved indicator
+            var audioIcon=ev.audio_saved===false?"<span title='No audio saved' style='color:#555;font-size:.8em;'>🔇</span>":"";
             var chk=_selectedIds.has(ev.id)?"checked":"";
             return "<tr id='row-"+ev.id+"'>"
                 +"<td><input type='checkbox' "+chk+" onchange='toggleSelect("+ev.id+",this.checked)' style='accent-color:#e05252;'></td>"
-                +"<td><span style='color:"+typeColor(ev.label)+";font-size:.9em;'>"+typeLabel(ev.label)+"</span></td>"
+                +"<td><span style='color:"+typeColor(ev.label)+";font-size:.9em;'>"+typeLabel(ev.label)+"</span>"+audioIcon+"</td>"
                 +"<td style='font-size:.8em;'>"+dateStr+"</td>"
                 +"<td>"+bpm+"</td>"
                 +"<td>"+conf+"</td>"

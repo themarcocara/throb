@@ -193,10 +193,11 @@ function spectrogram(signal, sr) {
     }
 
     // Compute data-driven colour range from 2nd and 98th percentiles
-    // so the Hot colorscale is always well-calibrated regardless of recording level
-    var allVals=[];
-    for(var f=0;f<maxBin;f++) for(var t=0;t<nFrames;t++) allVals.push(z[f][t]);
-    allVals.sort(function(a,b){return a-b;});
+    // Use typed array to avoid boxing 200k+ floats into JS Objects
+    var allVals=new Float32Array(maxBin*nFrames);
+    var vi=0;
+    for(var f=0;f<maxBin;f++) for(var t=0;t<nFrames;t++) allVals[vi++]=z[f][t];
+    allVals.sort();
     var zmin=allVals[Math.floor(0.02*allVals.length)];
     var zmax=allVals[Math.floor(0.98*allVals.length)];
     // Ensure minimum 40 dB dynamic range and sensible bounds
@@ -532,9 +533,9 @@ function enhance(audio, sr) {
     }
 
     // ── Step 5: Crest enhancer — sharpen peak-to-trough ratio ────────────
-    // Find 99th percentile of gated envelope
-    var sorted=[]; for(var i=0;i<env_gated.length;i++) sorted.push(env_gated[i]);
-    sorted.sort(function(a,b){return a-b;});
+    // Find 99th percentile of gated envelope — use typed array sort to avoid
+    // boxing 1M floats into a JS Object array (causes OOM in browser Workers)
+    var sorted=env_gated.slice().sort();
     var env_max=sorted[Math.floor(sorted.length*0.99)]||1e-9;
 
     var env_shaped = new Float64Array(out.length);
@@ -559,9 +560,11 @@ function enhance(audio, sr) {
     }
 
     // ── Step 8: Normalise to 95% peak — no hard clipping ─────────────────
-    var sortedMix=[]; for(var i=0;i<mixed.length;i++) sortedMix.push(Math.abs(mixed[i]));
-    sortedMix.sort(function(a,b){return a-b;});
-    var peakNorm=sortedMix[Math.floor(sortedMix.length*0.999)]||1e-9;
+    // abs values into a new typed array then sort in-place — avoids boxing 1M floats
+    var absMix=new Float64Array(mixed.length);
+    for(var i=0;i<mixed.length;i++) absMix[i]=Math.abs(mixed[i]);
+    absMix.sort();
+    var peakNorm=absMix[Math.floor(absMix.length*0.999)]||1e-9;
     var result=new Float32Array(out.length);
     for(var i=0;i<out.length;i++) result[i]=mixed[i]/peakNorm*0.95;
 

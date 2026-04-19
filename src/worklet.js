@@ -69,6 +69,8 @@ class ThrobProcessor extends AudioWorkletProcessor {
         // History
         this._acHist = [];
         this._mfHist = [];
+        // Last telemetry — included in snap messages for live state context
+        this._lastTelemetry = null;
         // Periodic save ticker (samples)
         this._periodicEnabled  = false;
         this._periodicInterval = 30 * 60 * SR;  // default 30 min in samples
@@ -197,6 +199,7 @@ class ThrobProcessor extends AudioWorkletProcessor {
 
     _sendSnap(reason, wallMs) {
         const snap = this._snapSecs(PERIODIC_SECS);
+        const t    = this._lastTelemetry;
         this.port.postMessage({
             type:    'audioSnap',
             reason,
@@ -204,6 +207,14 @@ class ThrobProcessor extends AudioWorkletProcessor {
             wallClockIso: new Date(wallMs).toISOString(),
             audioSnap:    snap.buffer,
             durationSecs: snap.length / SR,
+            // Live detection state at the moment of this snapshot
+            liveState:      this._state,
+            liveConf:       t ? t.confidence     : 0,
+            liveStrength:   t ? t.strength        : 0,
+            liveBpm:        t ? t.bpm             : 0,
+            liveMaskFactor: t ? t.masking_factor  : 0,
+            liveCtxMasked:  t ? t.context_masked  : 0,
+            liveDetected:   this._state === 'CONFIRMED' || this._state === 'COOLDOWN',
         }, [snap.buffer]);
     }
 
@@ -251,7 +262,7 @@ class ThrobProcessor extends AudioWorkletProcessor {
             this._mfHist.push(cm);   // use context_masked for history (not confidence mf)
             if (this._acHist.length > 20) { this._acHist.shift(); this._mfHist.shift(); }
 
-            this.port.postMessage({
+            var telem = {
                 type: 'telemetry',
                 confidence:     conf,
                 strength:       r.strength,
@@ -262,7 +273,9 @@ class ThrobProcessor extends AudioWorkletProcessor {
                 wallMs:         Date.now(),
                 periodicAcc:       this._periodicAcc / SR,
                 periodicInterval:  this._periodicInterval / SR,
-            });
+            };
+            this._lastTelemetry = telem;
+            this.port.postMessage(telem);
 
             if (this._state === 'IDLE' || this._state === 'DETECTING') {
                 if (conf >= CONF_THRESH) {

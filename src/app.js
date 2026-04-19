@@ -38,13 +38,9 @@ var worker        = null;
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
-function $(id) { return document.getElementById(id); }
+// $ / pcmToWav / dlBlob / fmtDuration are defined in src/utils.js (loads first)
 
-function statusFile(type, msg) {
-    var el = $("progressStatus");
-    el.className = "status " + type + " active";
-    el.innerHTML = (type === "loading" ? '<span class="spinner"></span>' : "") + msg;
-}
+// statusFile defined in src/utils.js
 
 function stem() {
     return audioFile ? audioFile.name.replace(/\.[^.]+$/, "") : "throb";
@@ -163,6 +159,10 @@ function updateAnalyzeBtn() {
     var ready = $("workerSrc").textContent.length > 0 && !$("initStatus").classList.contains("active");
     var hasPending = batch.some(function(j) { return j.status === "pending"; });
     $("analyzeBtn").disabled = !ready || !hasPending;
+    // Enable recording button once DSP is loaded (workletSrc also needed)
+    if (ready && $("workletSrc").textContent.length > 0) {
+        $("startRecBtn").disabled = false;
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
