@@ -1,0 +1,16 @@
+# throb-server config — multiple contexts in one process
+#
+# Run with:
+#   node server/throb-server.js --config server/config.yml
+#
+# Each context listens on its own port and saves to its own folder.
+# All contexts share one process and one event loop — zero overhead.
+
+contexts:
+  - port: 3001
+    out: ./data/apartment
+    label: apartment
+
+  - port: 3002
+    out: ./data/office
+    label: office

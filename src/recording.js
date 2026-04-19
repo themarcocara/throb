@@ -285,10 +285,12 @@ async function saveAudioSnap(m, reason) {
             live_throb_detected:   m.liveDetected||false,
             audio_saved:           saveAudio,
         };
-        await idbAdd("events", eventRec);
+        var savedEventId = await idbAdd("events", eventRec);
         if($("panelRec").classList.contains("active")){
             loadEventLog(); updateStorageBar();
         }
+        // Auto-upload if enabled (fire-and-forget, non-blocking)
+        autoUploadEvent(savedEventId, reason).catch(function(e){ console.warn("autoUpload:",e); });
     } catch(err) {
         console.error("saveAudioSnap failed:",err);
         statusRec("error","Save failed: "+err.message);
@@ -349,6 +351,158 @@ function typeLabel(label) {
     return "🟡 Manual";
 }
 
+// ── Upload status list ───────────────────────────────────────────────────────
+
+function addUploadStatus(eventId, label) {
+    var id = ++_uploadIdSeq;
+    _uploadStatuses.push({ id, eventId, label: label||'event', status:'pending', msg:'Uploading…' });
+    renderUploadStatuses();
+    return id;
+}
+
+function setUploadStatus(id, status, msg) {
+    var s = _uploadStatuses.find(function(x){ return x.id===id; });
+    if (s) { s.status = status; s.msg = msg; }
+    renderUploadStatuses();
+}
+
+function renderUploadStatuses() {
+    var wrap = $("uploadStatusWrap");
+    var list = $("uploadStatusList");
+    if (!wrap || !list) return;
+    if (_uploadStatuses.length === 0) { wrap.style.display = "none"; return; }
+    wrap.style.display = "";
+    list.innerHTML = _uploadStatuses.slice().reverse().map(function(s) {
+        var color = s.status==="ok"?"#2ecc71":s.status==="fail"?"#e74c3c":"#f5a623";
+        var icon  = s.status==="ok"?"✅":s.status==="fail"?"❌":"⏳";
+        var retryBtn = s.status==="fail"
+            ? "<button class='btn-secondary btn-sm' style='padding:2px 8px;font-size:.75em;margin-left:6px;' "
+              +"onclick='retryUpload("+s.id+")''>Retry</button>"
+            : "";
+        var clearBtn = "<button class='btn-secondary btn-sm' style='padding:2px 8px;font-size:.75em;margin-left:4px;background:rgba(80,80,80,.3);' "
+                      +"onclick='clearUploadStatus("+s.id+")'>✕</button>";
+        return "<div style='display:flex;align-items:center;padding:5px 9px;border-bottom:1px solid #1a2a3e;gap:6px;'>"
+            +"<span style='color:"+color+";'>"+icon+"</span>"
+            +"<span style='flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' title='"+s.msg+"'>"
+            +"<strong style='color:#e0e0e0;'>"+s.label+"</strong>"
+            +" <span style='color:#888;font-size:.9em;'>"+s.msg+"</span>"
+            +"</span>"
+            +retryBtn+clearBtn
+            +"</div>";
+    }).join("");
+}
+
+window.clearUploadStatus = function(id) {
+    _uploadStatuses = _uploadStatuses.filter(function(s){ return s.id!==id; });
+    renderUploadStatuses();
+};
+
+window.retryUpload = function(id) {
+    var s = _uploadStatuses.find(function(x){ return x.id===id; });
+    if (!s || !s.eventId) return;
+    var url = getUploadUrl();
+    if (!url) { setUploadStatus(id,"fail","No URL configured"); return; }
+    s.status = "pending"; s.msg = "Retrying…";
+    renderUploadStatuses();
+    doUploadEvent(s.eventId, url, id);
+};
+
+// ── Core upload function ──────────────────────────────────────────────────────
+
+async function doUploadEvent(eventId, url, statusId) {
+    // statusId is optional — if supplied, updates that status entry;
+    // otherwise creates a new one.
+    try {
+        var ev  = await idbGet("events", eventId);
+        if (!ev) { if(statusId) setUploadStatus(statusId,"fail","Event not found"); return; }
+
+        var sid = statusId || addUploadStatus(eventId, ev.label||"event");
+
+        // Build form-data fields
+        var fd  = new FormData();
+
+        // 1. Event JSON (strip blob fields — they go as separate form fields)
+        var evClean = Object.assign({}, ev);
+        delete evClean.pcm_blob;
+        fd.append("event", JSON.stringify(evClean));
+
+        // 2. Viz data
+        if (ev.viz_id) {
+            try {
+                var vd = await idbGet("viz_data", ev.viz_id);
+                if (vd) {
+                    // Split spectrogram out separately (can be large)
+                    var spec    = { freqs: vd.spec_freqs||[], times: vd.spec_times||[], z: vd.spec_z||[] };
+                    var vdClean = Object.assign({}, vd);
+                    delete vdClean.spec_freqs; delete vdClean.spec_times; delete vdClean.spec_z;
+                    fd.append("viz_data",    JSON.stringify(vdClean));
+                    if (spec.z && spec.z.length) fd.append("spectrogram", JSON.stringify(spec));
+                }
+            } catch(e) { console.warn("viz fetch for upload:", e); }
+        }
+
+        // 3. Audio — fetch from IDB, try to encode to M4A
+        if (ev.audio_id) {
+            try {
+                var audioRec = await idbGet("audio", ev.audio_id);
+                if (audioRec && audioRec.pcm_blob) {
+                    var audioBlob = audioRec.pcm_blob;
+                    var mimeType  = "audio/wav";
+                    // Try M4A encoding if AudioEncoder available
+                    try {
+                        var wavData  = await audioRec.pcm_blob.arrayBuffer();
+                        var pcmFloat = parseWavToFloat32(wavData);
+                        var m4aBlob  = await exportM4a(pcmFloat, audioRec.sample_rate||SR, function(){});
+                        if (m4aBlob) { audioBlob = m4aBlob; mimeType = "audio/mp4"; }
+                    } catch(encErr) { console.warn("M4A encode for upload failed, using WAV:", encErr); }
+                    fd.append("audio", audioBlob, mimeType==="audio/mp4"?"audio.m4a":"audio.wav");
+                }
+            } catch(e) { console.warn("audio fetch for upload:", e); }
+        }
+
+        setUploadStatus(sid, "pending", "Sending…");
+        var resp  = await fetch(url, { method:"POST", body:fd });
+        var json  = await resp.json().catch(function(){ return {}; });
+        if (resp.ok && json.ok) {
+            setUploadStatus(sid, "ok", "Saved " + (json.saved||[]).length + " file(s) on server");
+        } else {
+            setUploadStatus(sid, "fail", "Server error " + resp.status + ": " + (json.error||resp.statusText));
+        }
+    } catch(err) {
+        if (statusId) setUploadStatus(statusId, "fail", err.message);
+        else {
+            var ev2 = await idbGet("events", eventId).catch(function(){ return null; });
+            var sid2 = addUploadStatus(eventId, ev2 ? (ev2.label||"event") : "event");
+            setUploadStatus(sid2, "fail", err.message);
+        }
+    }
+}
+
+window.uploadEventById = function(eventId) {
+    var url = getUploadUrl();
+    if (!url) { statusRec("error","Set an upload URL first."); return; }
+    var sid = addUploadStatus(eventId, "event");
+    doUploadEvent(eventId, url, sid);
+};
+
+async function uploadSelectedEvents() {
+    var url = getUploadUrl();
+    if (!url) { statusRec("error","Set an upload URL first."); return; }
+    if (_selectedIds.size === 0) return;
+    for (var id of _selectedIds) {
+        var sid = addUploadStatus(id, "event");
+        await doUploadEvent(id, url, sid);
+    }
+}
+
+async function autoUploadEvent(eventId, label) {
+    if (!uploadEnabled()) return;
+    var url = getUploadUrl();
+    if (!url) return;
+    var sid = addUploadStatus(eventId, label||"event");
+    doUploadEvent(eventId, url, sid);
+}
+
 async function loadEventLog() {
     try {
         var events=await idbGetAll("events");
@@ -389,6 +543,7 @@ async function loadEventLog() {
                   +"<button class='btn-secondary btn-sm' onclick='openEnhanceModal("+ev.id+")'>▶ Play</button> "
                   +"<button class='btn-secondary btn-sm' onclick='openVizModal("+ev.id+")' title='View visualization'>📊</button> "
                   +"<button class='btn-secondary btn-sm' onclick='downloadEventWav("+ev.id+")' title='Download'>⬇</button> "
+                  +"<button class='btn-secondary btn-sm' onclick='uploadEventById("+ev.id+")' title='Upload to server'>⬆</button> "
                   +"<button class='btn-secondary btn-sm' style='background:linear-gradient(135deg,#5a1a1a,#7a2020);' onclick='deleteSingleEvent("+ev.id+")' title='Delete'>🗑</button>"
                 +"</td>"
                 +"</tr>";
@@ -406,6 +561,7 @@ function updateSelectionUI() {
     $("selectionCount").textContent=n>0?n+" selected":"";
     $("saveSelWavBtn").disabled=n===0;
     $("deleteSelBtn").disabled=n===0;
+    if($("uploadSelBtn")) $("uploadSelBtn").disabled=n===0;
     $("selectAllChk").checked=false;
     $("selectAllChkHeader").checked=false;
 }
@@ -591,6 +747,19 @@ function parseWavToFloat32(buffer) {
 // Kept separate from the batch `worker` so it can never intercept batch messages.
 var _enhWorker = null;
 
+// ── Upload state ──────────────────────────────────────────────────────────────
+var _uploadStatuses = [];    // [{id, eventId, label, status:'pending'|'ok'|'fail', msg, retry}]
+var _uploadIdSeq    = 0;
+
+function getUploadUrl() {
+    var el = $("uploadUrlInput");
+    return el ? el.value.trim() : "";
+}
+function uploadEnabled() {
+    var el = $("uploadToggle");
+    return el ? el.checked : false;
+}
+
 function getEnhWorker() {
     if (_enhWorker) return _enhWorker;
     var src  = $("workerSrc").textContent;
@@ -616,6 +785,39 @@ function runEnhanceInWorker(samples) {
         w.postMessage({ task: "enhance", audio: buf, sampleRate: SR }, [buf]);
     });
 }
+
+$("uploadSelBtn").addEventListener("click", function(){ uploadSelectedEvents(); });
+
+$("clearAllUploadStatusBtn").addEventListener("click", function(){
+    _uploadStatuses = [];
+    renderUploadStatuses();
+});
+
+$("testUploadBtn").addEventListener("click", async function(){
+    var url = getUploadUrl();
+    if (!url) { statusRec("error","Enter an upload URL first."); return; }
+    try {
+        var r = await fetch(url.replace("/upload","") + "/", {method:"GET"});
+        var j = await r.json().catch(function(){return {};});
+        statusRec(j.ok?"success":"error", j.ok
+            ? "✅ Server OK — label: "+(j.label||"?")+"  uptime: "+(j.uptime_s||0)+"s"
+            : "❌ Server responded: "+JSON.stringify(j));
+    } catch(e) {
+        statusRec("error", "❌ Could not reach server: "+e.message);
+    }
+});
+
+// Persist uploadUrl to localStorage
+$("uploadUrlInput").addEventListener("change", function(){
+    try { localStorage.setItem("throb_upload_url", this.value.trim()); } catch(e){}
+});
+// Restore on load
+(function(){
+    try {
+        var saved = localStorage.getItem("throb_upload_url");
+        if (saved && $("uploadUrlInput")) $("uploadUrlInput").value = saved;
+    } catch(e){}
+})();
 
 $("enhanceModalClose").addEventListener("click",function(){
     hideModal("enhanceModal");

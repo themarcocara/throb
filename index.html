@@ -415,6 +415,15 @@ audio{width:100%;margin-top:10px;border-radius:6px;}
                   <button class="btn-secondary btn-sm" id="downloadDiag" style="margin-bottom:6px;display:block;width:100%;">⬇ Diagnostic (PNG)</button>
                   <button class="btn-secondary btn-sm" id="downloadAudio" style="margin-bottom:6px;display:block;width:100%;display:none;">⬇ Audio</button>
                   <button class="btn-secondary btn-sm" id="downloadAll" style="display:block;width:100%;display:none;">⬇ All (ZIP)</button>
+                  <!-- File analysis upload -->
+                  <div id="fileUploadBox" style="margin-top:10px;display:none;border-top:1px solid #1a2a3e;padding-top:10px;">
+                    <div style="font-size:.8em;color:#f5a623;margin-bottom:6px;font-weight:bold;">Upload to Server</div>
+                    <input type="text" id="fileUploadUrl" placeholder="http://localhost:3001/upload"
+                      style="width:100%;background:#1a2a4e;color:#e0e0e0;border:1px solid #2a3a5e;
+                             border-radius:4px;padding:5px 8px;font-size:.82em;font-family:monospace;margin-bottom:6px;">
+                    <button class="btn-secondary btn-sm" id="uploadFileBtn" style="width:100%;display:block;">⬆ Upload Results</button>
+                    <div id="fileUploadStatus" style="margin-top:5px;font-size:.78em;color:#aaa;"></div>
+                  </div>
                 </div>
 
               </div>
@@ -485,6 +494,37 @@ audio{width:100%;margin-top:10px;border-radius:6px;}
         </span>
       </div>
 
+      <!-- HTTP upload controls -->
+      <div style="padding:10px 14px;background:#0f1a30;border-radius:6px;margin-bottom:12px;">
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px;">
+          <label class="toggle" title="Automatically upload each new event to the configured HTTP address">
+            <input type="checkbox" id="uploadToggle">
+            <span class="toggle-slider"></span>
+          </label>
+          <span style="font-size:.88em;font-weight:bold;color:#f5a623;">Auto-upload events</span>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <input type="text" id="uploadUrlInput" placeholder="http://localhost:3001/upload"
+            style="flex:1;min-width:180px;background:#1a2a4e;color:#e0e0e0;border:1px solid #2a3a5e;
+                   border-radius:4px;padding:6px 10px;font-size:.85em;font-family:monospace;">
+          <button class="btn-secondary btn-sm" id="testUploadBtn" title="Send a test ping to the configured address">Test</button>
+        </div>
+        <div style="font-size:.75em;color:#555;margin-top:5px;">
+          Audio encoded to M4A when possible. Toggle and URL changes take effect at next event.
+        </div>
+      </div>
+
+      <!-- Upload status log -->
+      <div id="uploadStatusWrap" style="display:none;margin-bottom:12px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;">
+          <span style="font-size:.78em;color:#aaa;">Upload log</span>
+          <button class="btn-secondary btn-sm" id="clearAllUploadStatusBtn" style="padding:3px 10px;font-size:.75em;">Clear all</button>
+        </div>
+        <div id="uploadStatusList"
+          style="max-height:160px;overflow-y:auto;border:1px solid #1a2a3e;border-radius:5px;font-size:.78em;">
+        </div>
+      </div>
+
       <div class="status info active" style="margin-top:0" id="recStatusMsg">
         Press <strong>Start Recording</strong> to begin continuous throb monitoring.
         Keep this tab open and screen on. On Android, plug into charger for 24/7 use.
@@ -531,6 +571,7 @@ audio{width:100%;margin-top:10px;border-radius:6px;}
         <button class="btn-secondary btn-sm" id="refreshLogBtn">↻ Refresh</button>
         <button class="btn-secondary btn-sm" id="exportAllBtn">⬇ Export All (JSON)</button>
         <button class="btn-secondary btn-sm" id="saveSelWavBtn" disabled>⬇ Save Selected WAV</button>
+        <button class="btn-secondary btn-sm" id="uploadSelBtn" disabled title="Upload selected events">⬆ Upload Sel.</button>
         <button class="btn-secondary btn-sm" id="deleteSelBtn"
           style="background:linear-gradient(135deg,#6c2a2a,#8e3030);" disabled>🗑 Delete Selected</button>
         <button class="btn-secondary btn-sm" id="clearLogBtn"

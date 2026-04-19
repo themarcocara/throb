@@ -52,6 +52,7 @@ function updateFileTabDownloads() {
         $("audioFormatBox").style.display = "";
         $("downloadAudio").style.display  = "block";
         $("downloadAll").style.display    = "block";
+        updateFileUploadBox();
     }
 }
 
@@ -551,6 +552,130 @@ $("downloadBatchJson").addEventListener("click", async function() {
         };
     });
     dlBlob(new Blob([JSON.stringify(combined,null,2)],{type:"application/json"}), "throb_batch_timestamps.json");
+});
+
+// ── File analysis upload ──────────────────────────────────────────────────────
+function updateFileUploadBox() {
+    // Show the upload box once a file is decoded (pcm available)
+    var box = $("fileUploadBox");
+    if (box && pcm) box.style.display = "";
+    // Restore URL from localStorage
+    try {
+        var saved = localStorage.getItem("throb_file_upload_url");
+        if (saved && $("fileUploadUrl") && !$("fileUploadUrl").value) $("fileUploadUrl").value = saved;
+    } catch(e){}
+}
+
+$("fileUploadUrl").addEventListener("change", function(){
+    try { localStorage.setItem("throb_file_upload_url", this.value.trim()); } catch(e){}
+});
+
+$("uploadFileBtn").addEventListener("click", async function() {
+    var url = $("fileUploadUrl").value.trim();
+    if (!url) { $("fileUploadStatus").textContent = "❌ Enter a server URL first."; return; }
+    if (!detResult) { $("fileUploadStatus").textContent = "❌ No analysis result yet."; return; }
+
+    $("fileUploadStatus").textContent = "⏳ Building upload…";
+    $("uploadFileBtn").disabled = true;
+    try {
+        var fd = new FormData();
+
+        // Event / timestamps JSON
+        var base = new Date(audioFile.lastModified);
+        var tsData = {
+            file: audioFile.name,
+            detected: detResult.detected,
+            detected_at_s: detResult.detected_at,
+            bpm: +detResult.bpm.toFixed(1),
+            strength: +detResult.strength.toFixed(4),
+            threshold: detResult.threshold,
+            duration_s: +detResult.duration.toFixed(3),
+            detection_method: detResult.detection_method,
+            masking_detected: detResult.masking_detected,
+            masking_duration_s: detResult.masking_duration_s,
+            wall_clock_iso: base.toISOString(),
+            label: "file_analysis",
+            segments: detResult.segments.map(function(s,i){ return {
+                index:i+1, start_seconds:+s.start.toFixed(3), end_seconds:+s.end.toFixed(3),
+                start_iso: new Date(base.getTime()+s.start*1000).toISOString(),
+                end_iso:   new Date(base.getTime()+s.end*1000).toISOString(),
+                duration_seconds:+(s.end-s.start).toFixed(3), bpm:+s.bpm.toFixed(1),
+            };})
+        };
+        fd.append("event", JSON.stringify(tsData));
+
+        // Viz data
+        if (detResult) {
+            var vd = {
+                wall_clock_iso: base.toISOString(),
+                reason: "file_analysis",
+                sr: SR,
+                duration: detResult.duration, detected: detResult.detected,
+                bpm: detResult.bpm, strength: detResult.strength,
+                threshold: detResult.threshold, segments: detResult.segments,
+                times:              Array.from(detResult.times            ||[]),
+                strengths:          Array.from(detResult.strengths        ||[]),
+                confidences:        Array.from(detResult.confidences      ||[]),
+                masking_factors:    Array.from(detResult.masking_factors  ||[]),
+                context_masked_arr: Array.from(detResult.context_masked_arr||[]),
+                corrFull:           Array.from(detResult.corrFull         ||[]),
+                masking_detected:     detResult.masking_detected,
+                masking_duration_s:   detResult.masking_duration_s,
+                detection_method:     detResult.detection_method,
+            };
+            var spec = detResult.spectrogram;
+            fd.append("viz_data", JSON.stringify(vd));
+            if (spec && spec.z && spec.z.length) {
+                fd.append("spectrogram", JSON.stringify({freqs:spec.freqs,times:spec.times,z:spec.z}));
+            }
+        }
+
+        // Audio — raw, enhanced, or both; encode to M4A if requested
+        var wantEnhanced = $("chkEnhancedAudio") && $("chkEnhancedAudio").checked;
+        var wantRaw      = $("chkRawAudio")      && $("chkRawAudio").checked;
+        var wantEncoded  = $("chkEncodedAudio")  && $("chkEncodedAudio").checked;
+
+        async function audioBlob(samples, name) {
+            if (wantEncoded) {
+                try {
+                    var m4a = await exportM4a(samples, SR, function(t,m){ $("fileUploadStatus").textContent="⏳ "+m; });
+                    if (m4a) return { blob: m4a, name: name+".m4a" };
+                } catch(e) {}
+            }
+            return { blob: pcmToWav(samples, SR), name: name+".wav" };
+        }
+
+        if (wantRaw && pcm) {
+            var a = await audioBlob(pcm, "raw");
+            fd.append("audio", a.blob, a.name);
+        }
+        if (wantEnhanced && enhPCM) {
+            var a2 = await audioBlob(enhPCM, "enhanced");
+            fd.append("audio_enhanced", a2.blob, a2.name);
+        } else if (wantEnhanced && !enhPCM && pcm) {
+            // Run enhancement on demand
+            $("fileUploadStatus").textContent = "⏳ Enhancing for upload…";
+            var enhBuf = await runEnhanceInWorker(pcm);
+            var a3 = await audioBlob(new Float32Array(enhBuf), "enhanced");
+            fd.append("audio_enhanced", a3.blob, a3.name);
+        }
+
+        $("fileUploadStatus").textContent = "⏳ Uploading…";
+        var resp = await fetch(url, { method:"POST", body:fd });
+        var json = await resp.json().catch(function(){return {};});
+        if (resp.ok && json.ok) {
+            $("fileUploadStatus").innerHTML = "✅ Uploaded — " + (json.saved||[]).length + " file(s) saved";
+            $("fileUploadStatus").style.color = "#2ecc71";
+        } else {
+            $("fileUploadStatus").innerHTML = "❌ " + (json.error || ("HTTP "+resp.status));
+            $("fileUploadStatus").style.color = "#e74c3c";
+        }
+    } catch(err) {
+        $("fileUploadStatus").innerHTML = "❌ " + err.message;
+        $("fileUploadStatus").style.color = "#e74c3c";
+    } finally {
+        $("uploadFileBtn").disabled = false;
+    }
 });
 
 $("downloadBatchAll").addEventListener("click", async function() {
