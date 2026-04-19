@@ -245,6 +245,8 @@ async function saveAudioSnap(m, reason) {
                 spec_freqs:  vizResult.spectrogram ? vizResult.spectrogram.freqs : [],
                 spec_times:  vizResult.spectrogram ? vizResult.spectrogram.times : [],
                 spec_z:      vizResult.spectrogram ? vizResult.spectrogram.z     : [],
+                spec_zmin:   vizResult.spectrogram ? vizResult.spectrogram.zmin  : -80,
+                spec_zmax:   vizResult.spectrogram ? vizResult.spectrogram.zmax  : -10,
             };
             vizId = await idbAdd("viz_data", vizData);
         } catch(vizErr) {
@@ -282,20 +284,18 @@ async function saveAudioSnap(m, reason) {
 // Run detect() in the DSP worker, returns the result object
 function runDetectInWorker(samples) {
     return new Promise(function(resolve, reject) {
+        var w   = getEnhWorker();   // reuse the dedicated on-demand worker
         var buf = samples.buffer.slice(0);
-        worker.postMessage({ task:"detect", audio:buf, sampleRate:SR }, [buf]);
-        var orig = worker.onmessage;
-        worker.onmessage = function(e) {
+        w.onmessage = function(e) {
             if (e.data.type === "detected") {
-                worker.onmessage = orig;
+                w.onmessage = null;
                 resolve(e.data.result);
             } else if (e.data.type === "error") {
-                worker.onmessage = orig;
+                w.onmessage = null;
                 reject(new Error(e.data.message));
-            } else {
-                if (orig) orig(e);
             }
         };
+        w.postMessage({ task: "detect", audio: buf, sampleRate: SR }, [buf]);
     });
 }
 
@@ -483,6 +483,8 @@ window.downloadEventWav = async function(id) {
                         spec_freqs:res.spectrogram?res.spectrogram.freqs:[],
                         spec_times:res.spectrogram?res.spectrogram.times:[],
                         spec_z:res.spectrogram?res.spectrogram.z:[],
+                        spec_zmin:res.spectrogram?res.spectrogram.zmin:-80,
+                        spec_zmax:res.spectrogram?res.spectrogram.zmax:-10,
                     };}
             }catch(e2){console.warn("viz load row:",e2);}
         }
@@ -566,22 +568,33 @@ function parseWavToFloat32(buffer) {
     throw new Error("WAV data chunk not found");
 }
 
+// Dedicated worker for on-demand enhancement (recording log playback / downloads).
+// Kept separate from the batch `worker` so it can never intercept batch messages.
+var _enhWorker = null;
+
+function getEnhWorker() {
+    if (_enhWorker) return _enhWorker;
+    var src  = $("workerSrc").textContent;
+    var blob = new Blob([src], { type: "application/javascript" });
+    _enhWorker = new Worker(URL.createObjectURL(blob));
+    return _enhWorker;
+}
+
 function runEnhanceInWorker(samples) {
-    return new Promise(function(resolve,reject){
-        var buf=samples.buffer.slice(0);
-        worker.postMessage({task:"enhance",audio:buf,sampleRate:SR},[buf]);
-        var orig=worker.onmessage;
-        worker.onmessage=function(e){
-            if(e.data.type==="enhanced"){
-                worker.onmessage=orig;
+    return new Promise(function(resolve, reject) {
+        var w   = getEnhWorker();
+        var buf = samples.buffer.slice(0);
+        w.onmessage = function(e) {
+            if (e.data.type === "enhanced") {
+                w.onmessage = null;
                 resolve(e.data.audio);
-            } else if(e.data.type==="error"){
-                worker.onmessage=orig;
+            } else if (e.data.type === "error") {
+                w.onmessage = null;
                 reject(new Error(e.data.message));
-            } else {
-                if(orig) orig(e);
             }
+            // ignore "ready" ping and other messages
         };
+        w.postMessage({ task: "enhance", audio: buf, sampleRate: SR }, [buf]);
     });
 }
 

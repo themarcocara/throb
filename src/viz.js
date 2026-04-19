@@ -94,6 +94,8 @@ window.openVizModal = async function(eventId) {
                     spec_freqs: res.spectrogram ? res.spectrogram.freqs : [],
                     spec_times: res.spectrogram ? res.spectrogram.times : [],
                     spec_z:     res.spectrogram ? res.spectrogram.z     : [],
+                    spec_zmin:  res.spectrogram ? res.spectrogram.zmin  : -80,
+                    spec_zmax:  res.spectrogram ? res.spectrogram.zmax  : -10,
                 };
                 // Backfill into IDB for next time
                 try {
@@ -133,10 +135,15 @@ function renderVizPlot(container, vd) {
 
     // ── Spectrogram ───────────────────────────────────────────────────────────
     if (vd.spec_z && vd.spec_z.length > 0) {
+        var specZmin = vd.spec_zmin !== undefined ? vd.spec_zmin : -80;
+        var specZmax = vd.spec_zmax !== undefined ? vd.spec_zmax : -10;
         traces.push({
             x: vd.spec_times, y: vd.spec_freqs, z: vd.spec_z,
-            type:"heatmap", colorscale:"Hot", showscale:false,
-            zmin:-80, zmax:-10, xaxis:"x", yaxis:"y", name:"Spectrogram"
+            type:"heatmap", colorscale:"Hot", showscale:true,
+            zmin:specZmin, zmax:specZmax,
+            colorbar:{title:{text:"dB",side:"right"},thickness:12,len:0.33,y:0.83,
+                      tickfont:{size:9,color:txt},titlefont:{size:10,color:txt}},
+            xaxis:"x", yaxis:"y", name:"Spectrogram"
         });
     }
 
@@ -197,6 +204,8 @@ function renderVizPlot(container, vd) {
 
     // Segment highlight shapes on strength panel
     var shapes = [
+        {type:"rect",x0:0,x1:1,xref:"paper",yref:"y",
+         y0:80,y1:160,fillcolor:"rgba(245,166,35,0.07)",line:{width:0}},
         {type:"line",x0:0,x1:1,xref:"paper",yref:"y",y0:80,y1:80,line:{color:amb,dash:"dot",width:0.8}},
         {type:"line",x0:0,x1:1,xref:"paper",yref:"y",y0:160,y1:160,line:{color:amb,dash:"dot",width:0.8}},
     ];
@@ -218,7 +227,7 @@ function renderVizPlot(container, vd) {
         margin:{l:56,r:16,t:12,b:44},
         grid:{rows:3,columns:1,pattern:"independent"},
         xaxis: {gridcolor:grid,title:"Time (s)"},
-        yaxis: {gridcolor:grid,title:"Hz",range:[0,300]},
+        yaxis: {gridcolor:grid,title:"Hz",range:[0,500]},
         xaxis2:{gridcolor:grid,title:"Time (s)"},
         yaxis2:{gridcolor:grid,title:"Score",range:[0,1.05]},
         xaxis3:{gridcolor:grid,title:"Lag (s)",range:[0,Math.min(4,lagAxis[lagAxis.length-1]||4)]},

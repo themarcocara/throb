@@ -64,66 +64,92 @@ audio-throb-detector/
 
 ## CLI reference
 
+All three commands accept **one or more input files**. Shell glob expansion
+works naturally — the shell expands `*.m4a` before the CLI sees the arguments.
+
 ### `detect` — run detection
 
 ```bash
-node cli/throb.js detect <input> [options]
+node cli/throb.js detect <file> [file …] [options]
 ```
 
-Prints detected BPM, strength, segments, and masking context to stdout.
-
 ```bash
-# Human-readable output
+# Single file — human-readable
 node cli/throb.js detect recording.m4a
 
-# JSON output (pipe-friendly)
-node cli/throb.js detect recording.m4a --json
+# Multiple files
+node cli/throb.js detect *.m4a
 
-# JSON to file
-node cli/throb.js detect recording.m4a --json --out timestamps.json
+# JSON to stdout — single object for one file, array for multiple
+node cli/throb.js detect recording.m4a --json
+node cli/throb.js detect *.m4a --json > batch.json
+
+# Write one timestamps JSON per file into a directory
+node cli/throb.js detect *.m4a --out ./reports
 
 # Custom threshold and window
 node cli/throb.js detect recording.m4a --threshold 0.35 --window 3.0
 ```
 
+**Multi-file output behaviour:**
+- Human-readable: results printed sequentially, summary line at end
+- `--json` stdout: single object for one file, JSON array for multiple
+- `--json --out <dir>`: one `*_timestamps.json` per file written into the directory
+
 ### `enhance` — produce enhanced audio
 
 ```bash
-node cli/throb.js enhance <input> [options]
+node cli/throb.js enhance <file> [file …] [options]
 ```
 
-Applies the envelope-shaping enhancer and writes the result.
-
 ```bash
-# WAV output (default)
+# Single file with explicit output path
 node cli/throb.js enhance recording.m4a --out enhanced.wav
-
-# M4A output via ffmpeg (requires ffmpeg in PATH)
 node cli/throb.js enhance recording.m4a --encode --out enhanced.m4a
+
+# Multiple files into a directory (each gets *_enhanced.wav)
+node cli/throb.js enhance *.m4a --out ./enhanced
+node cli/throb.js enhance *.m4a --encode --out ./enhanced
 ```
 
 ### `analyze` — full pipeline
 
 ```bash
-node cli/throb.js analyze <input> [options]
+node cli/throb.js analyze <file> [file …] [options]
 ```
 
-Runs detection, optionally enhances audio, and writes all requested artifacts
-to an output directory.
-
 ```bash
-# All artifacts, M4A encoded
-node cli/throb.js analyze recording.m4a \
-  --out ./results \
-  --enhanced \
-  --encode \
-  --viz
+# Single file — artifacts written directly into --out
+node cli/throb.js analyze recording.m4a --out ./results --enhanced --encode --viz
 
-# Timestamps + raw WAV only
-node cli/throb.js analyze recording.m4a --out ./results
+# Multiple files — each gets a sub-directory: --out/<stem>/
+node cli/throb.js analyze *.m4a --out ./results --enhanced --encode --viz
 
-# Quiet (suppress progress, useful in scripts)
-node cli/throb.js analyze recording.m4a --out ./results --quiet
+# Skip failed files instead of aborting
+node cli/throb.js analyze *.m4a --out ./results --continue-on-error
+```
+
+**Output structure — single file:**
+```
+results/
+  recording_timestamps.json
+  recording_raw.wav
+  recording_enhanced.wav
+  recording_viz.json
+  recording_spectrogram.json
+```
+
+**Output structure — multiple files:**
+```
+results/
+  batch_summary.json          ← one row per file
+  recording1/
+    recording1_timestamps.json
+    recording1_raw.wav
+    …
+  recording2/
+    recording2_timestamps.json
+    …
 ```
 
 **Output files** (all prefixed with the input stem):
@@ -135,12 +161,13 @@ node cli/throb.js analyze recording.m4a --out ./results --quiet
 | `*_enhanced.wav` / `*_enhanced.m4a` | Envelope-shaped, throb-boosted audio |
 | `*_viz.json` | All numeric series for plot reconstruction (no spectrogram matrix) |
 | `*_spectrogram.json` | Full spectrogram matrix (freq × time) — can be large |
+| `batch_summary.json` | One row per file: detected, BPM, method, error (multi-file only) |
 
 ### All options
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--out <path>` | auto | Output file (detect/enhance) or directory (analyze) |
+| `--out <path>` | auto | Output file (single enhance) or directory |
 | `--enhanced` | off | Include enhanced audio in analyze output |
 | `--raw` | on | Include raw audio in analyze output |
 | `--no-raw` | — | Suppress raw audio |
@@ -152,6 +179,7 @@ node cli/throb.js analyze recording.m4a --out ./results --quiet
 | `--no-enhance` | — | Skip enhancement step in analyze |
 | `--quiet` | off | Suppress progress output to stderr |
 | `--json` | off | Output results as JSON (detect mode) |
+| `--continue-on-error` | off | Skip failed files instead of aborting |
 
 ---
 
