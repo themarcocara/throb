@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
 <title>🫀 Audio Throb Detector</title>
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 <style>
@@ -103,6 +104,15 @@ audio{width:100%;margin-top:10px;border-radius:6px;}
 .badge-grey{background:rgba(150,150,150,.15);color:#888;border:1px solid #555;}
 .no-events{color:#555;font-size:.88em;padding:18px 0;text-align:center;}
 
+/* ── Plot containers — immune to dark mode extensions ── */
+#diagnosticsPlot, #vizModalPlot {
+    background: #16213e !important;
+    color-scheme: dark !important;
+}
+#diagnosticsPlot *, #vizModalPlot * {
+    /* Prevent Dark Reader filter injection on SVG/canvas children */
+    filter: none !important;
+}
 /* ── Enhance modal ── */
 .modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:1000;align-items:center;justify-content:center;}
 .modal-overlay.active{display:flex;}
@@ -161,7 +171,7 @@ audio{width:100%;margin-top:10px;border-radius:6px;}
       </div>
       <div class="section">
         <h2>4. Diagnostic Plot</h2>
-        <div id="diagnosticsPlot"></div>
+        <div id="diagnosticsPlot" data-darkreader-ignore></div>
       </div>
       <div class="section" id="audioPlayerSection" style="display:none">
         <h2>5. Enhanced Audio</h2>
@@ -349,7 +359,7 @@ audio{width:100%;margin-top:10px;border-radius:6px;}
       <button id="vizModalClose" style="background:none;border:none;color:#aaa;font-size:1.4em;cursor:pointer;padding:0 4px;">✕</button>
     </div>
     <p style="color:#aaa;font-size:.82em;margin-bottom:10px;" id="vizModalInfo"></p>
-    <div id="vizModalPlot" style="width:100%;min-height:420px;border-radius:6px;"></div>
+    <div id="vizModalPlot" data-darkreader-ignore style="width:100%;min-height:420px;border-radius:6px;"></div>
     <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:14px;">
       <button id="vizModalDlJson" class="btn-secondary" style="border:none;padding:8px 16px;border-radius:5px;cursor:pointer;font-size:.88em;">⬇ JSON data</button>
       <button id="vizModalDlPng"  class="btn-secondary" style="border:none;padding:8px 16px;border-radius:5px;cursor:pointer;font-size:.88em;">⬇ PNG</button>

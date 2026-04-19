@@ -227,7 +227,12 @@ function renderPlots(r) {
     var bg="#16213e",grid="#2a3a5e",txt="#ccc",red="#e05252",amb="#f5a623";
     var lagAxis=r.corrFull.map(function(_,i){return i/SR;}),spec=r.spectrogram;
     Plotly.newPlot($("diagnosticsPlot"),[
-        {x:spec.times,y:spec.freqs,z:spec.z,type:"heatmap",colorscale:"Hot",showscale:false,zmin:-80,zmax:-10,xaxis:"x",yaxis:"y"},
+        {x:spec.times,y:spec.freqs,z:spec.z,type:"heatmap",
+         colorscale:"Hot",showscale:true,
+         zmin:spec.zmin,zmax:spec.zmax,
+         colorbar:{title:{text:"dB",side:"right"},thickness:12,len:0.33,y:0.83,
+                   tickfont:{size:9,color:txt},titlefont:{size:10,color:txt}},
+         xaxis:"x",yaxis:"y"},
         {x:r.times,y:r.strengths,type:"scatter",mode:"lines+markers",
          marker:{size:5,color:r.strengths.map(function(s){return s>=r.threshold?red:"#5588cc";})},
          line:{color:"#5588cc",width:1.5},name:"AC Strength",xaxis:"x2",yaxis:"y2"},
@@ -240,11 +245,14 @@ function renderPlots(r) {
     ],{
         paper_bgcolor:bg,plot_bgcolor:bg,font:{color:txt,size:11},height:720,
         margin:{l:60,r:20,t:24,b:50},grid:{rows:3,columns:1,pattern:"independent"},
-        xaxis:{gridcolor:grid,title:"Time (s)"},yaxis:{gridcolor:grid,title:"Hz",range:[0,300]},
+        xaxis:{gridcolor:grid,title:"Time (s)"},yaxis:{gridcolor:grid,title:"Hz",range:[0,500]},
         xaxis2:{gridcolor:grid,title:"Time (s)"},yaxis2:{gridcolor:grid,title:"Strength"},
         xaxis3:{gridcolor:grid,title:"Lag (s)",range:[0,Math.min(4,lagAxis[lagAxis.length-1]||4)]},
         yaxis3:{gridcolor:grid,title:"Autocorr"},showlegend:false,
         shapes:[
+            // Throb band highlight (80–160 Hz)
+            {type:"rect",x0:0,x1:1,xref:"paper",yref:"y",
+             y0:80,y1:160,fillcolor:"rgba(245,166,35,0.07)",line:{width:0}},
             {type:"line",x0:0,x1:1,xref:"paper",yref:"y",y0:80,y1:80,line:{color:amb,dash:"dot",width:1}},
             {type:"line",x0:0,x1:1,xref:"paper",yref:"y",y0:160,y1:160,line:{color:amb,dash:"dot",width:1}},
             {type:"line",x0:0,x1:1,xref:"paper",yref:"y2",y0:r.threshold,y1:r.threshold,line:{color:amb,dash:"dash",width:1.5}}

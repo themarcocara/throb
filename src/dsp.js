@@ -161,22 +161,50 @@ function autocorrelate(signal) {
 // ── Spectrogram (FFT-based) ───────────────────────────────────────────────
 
 function spectrogram(signal, sr) {
-    var nfft=512, hop=256, N=nextPow2(nfft);
+    // nfft=2048 gives 7.8 Hz/bin at 16 kHz — matches Python resolution
+    // hop=256 for smooth time axis (~16 ms steps)
+    var nfft=2048, hop=256, N=nextPow2(nfft);
+
+    // Normalise signal amplitude so dB values are comparable across devices/recordings
+    var maxAmp=0;
+    for(var i=0;i<signal.length;i++) if(Math.abs(signal[i])>maxAmp) maxAmp=Math.abs(signal[i]);
+    var norm = maxAmp > 1e-9 ? 1.0/maxAmp : 1.0;
+
     var hann=new Float64Array(nfft);
     for(var i=0;i<nfft;i++) hann[i]=0.5*(1-Math.cos(2*Math.PI*i/(nfft-1)));
-    var maxBin=Math.ceil(1000*N/sr); maxBin=Math.min(maxBin,N/2);
+
+    // Show 0–500 Hz: covers the throb band (80–160 Hz) with plenty of context
+    var maxFreqHz = 500;
+    var maxBin=Math.ceil(maxFreqHz*N/sr); maxBin=Math.min(maxBin,N/2);
     var freqs=[]; for(var k=0;k<maxBin;k++) freqs.push(k*sr/N);
+
     var nFrames=Math.floor((signal.length-nfft)/hop)+1;
-    var z=[]; for(var f=0;f<maxBin;f++) z.push(new Array(nFrames));
-    var times=new Array(nFrames);
+    // z[freqIdx][timeIdx] — Plotly heatmap with y=freqs, x=times expects this layout
+    var z=[]; for(var f=0;f<maxBin;f++) z.push(new Float32Array(nFrames));
+    var times=new Float32Array(nFrames);
+
     for(var fi=0;fi<nFrames;fi++){
         var s=fi*hop,re=new Float64Array(N),im=new Float64Array(N);
-        for(var i=0;i<nfft&&s+i<signal.length;i++) re[i]=signal[s+i]*hann[i];
+        for(var i=0;i<nfft&&s+i<signal.length;i++) re[i]=signal[s+i]*hann[i]*norm;
         fftInPlace(re,im);
-        for(var k=0;k<maxBin;k++) z[k][fi]=20*Math.log10(Math.sqrt(re[k]*re[k]+im[k]*im[k])+1e-9);
+        for(var k=0;k<maxBin;k++)
+            z[k][fi]=20*Math.log10(Math.sqrt(re[k]*re[k]+im[k]*im[k])+1e-9);
         times[fi]=(s+nfft/2)/sr;
     }
-    return {freqs:freqs,times:times,z:z};
+
+    // Compute data-driven colour range from 2nd and 98th percentiles
+    // so the Hot colorscale is always well-calibrated regardless of recording level
+    var allVals=[];
+    for(var f=0;f<maxBin;f++) for(var t=0;t<nFrames;t++) allVals.push(z[f][t]);
+    allVals.sort(function(a,b){return a-b;});
+    var zmin=allVals[Math.floor(0.02*allVals.length)];
+    var zmax=allVals[Math.floor(0.98*allVals.length)];
+    // Ensure minimum 40 dB dynamic range and sensible bounds
+    if(zmax-zmin < 40) zmin=zmax-40;
+
+    return {freqs:Array.from(freqs), times:Array.from(times),
+            z:z.map(function(row){return Array.from(row);}),
+            zmin:zmin, zmax:zmax};
 }
 
 // ── Butterworth bandpass (SOS, precomputed coefficients, filtfilt) ───────────
