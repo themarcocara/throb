@@ -18,7 +18,6 @@
  *   → src/idb.js → src/download.js → src/viz.js → src/recording.js → src/app.js
  */
 
-(function () {
 "use strict";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -271,5 +270,3 @@ Promise.all([
         + "<br><small>Serve from a local server — <code>npx serve .</code> — not file://</small>";
     $("initStatus").className = "status error active";
 });
-
-}());
