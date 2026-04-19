@@ -1,0 +1,22 @@
+{
+  "name": "audio-throb-detector",
+  "version": "2.0.0",
+  "description": "Detect low-frequency rhythmic throb sounds (80–160 Hz) in audio. Web app + Node.js CLI.",
+  "main": "src/dsp.js",
+  "bin": {
+    "throb": "./cli/throb.js"
+  },
+  "scripts": {
+    "serve": "npx serve . -l 8080",
+    "detect": "node cli/throb.js detect",
+    "enhance": "node cli/throb.js enhance",
+    "analyze": "node cli/throb.js analyze"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": ["audio", "signal-processing", "throb", "heartbeat", "detection", "dsp"],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {}
+}
