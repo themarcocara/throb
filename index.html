@@ -3,7 +3,6 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="color-scheme" content="dark">
 <title>🫀 Audio Throb Detector</title>
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 <style>
@@ -104,33 +103,6 @@ audio{width:100%;margin-top:10px;border-radius:6px;}
 .badge-grey{background:rgba(150,150,150,.15);color:#888;border:1px solid #555;}
 .no-events{color:#555;font-size:.88em;padding:18px 0;text-align:center;}
 
-/* ── Batch file list ── */
-#fileList { border:1px solid #1a2a3e; }
-.file-item {
-    display:flex; align-items:center; gap:8px;
-    padding:8px 10px; cursor:pointer;
-    border-bottom:1px solid #1a2a3e;
-    transition:background .15s; font-size:.84em; line-height:1.3;
-}
-.file-item:last-child { border-bottom:none; }
-.file-item:hover { background:rgba(255,255,255,.04); }
-.file-item.active { background:#1a2a4e; border-left:3px solid #e05252; }
-.file-item .fi-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.file-item .fi-badge { flex-shrink:0; font-size:.75em; padding:2px 7px; border-radius:8px; font-weight:bold; }
-.fi-badge.pending  { background:#2a2a3e; color:#666; }
-.fi-badge.running  { background:rgba(245,166,35,.2); color:#f5a623; }
-.fi-badge.detected { background:rgba(46,204,113,.2); color:#2ecc71; }
-.fi-badge.missed   { background:rgba(231,76,60,.2);  color:#e74c3c; }
-.fi-badge.error    { background:rgba(231,76,60,.15); color:#e67e22; }
-/* ── Plot containers — immune to dark mode extensions ── */
-#diagnosticsPlot, #vizModalPlot {
-    background: #16213e !important;
-    color-scheme: dark !important;
-}
-#diagnosticsPlot *, #vizModalPlot * {
-    /* Prevent Dark Reader filter injection on SVG/canvas children */
-    filter: none !important;
-}
 /* ── Enhance modal ── */
 .modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:1000;align-items:center;justify-content:center;}
 .modal-overlay.active{display:flex;}
@@ -159,137 +131,73 @@ audio{width:100%;margin-top:10px;border-radius:6px;}
        ══════════════════════════════════════════════════════════════ -->
   <div class="tab-panel active" id="panelFile">
 
-    <!-- ── Top controls bar ── -->
-    <div class="section" style="margin-bottom:14px;padding:14px 18px;">
-      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-
-        <!-- File picker -->
-        <div class="upload-area" id="dropZone" style="padding:14px 20px;flex:1;min-width:220px;">
-          <label for="audioInput" style="cursor:pointer;display:flex;align-items:center;gap:10px;">
-            📁 <strong>Choose files</strong> or drag &amp; drop
-            <small style="color:#aaa;font-size:.78em;">MP4 MOV MP3 AAC WAV FLAC OGG (multiple OK)</small>
-          </label>
-          <input type="file" id="audioInput" multiple
-            accept="video/*,audio/*,.mp4,.mov,.mkv,.mp3,.aac,.wav,.flac,.ogg">
-        </div>
-
-        <!-- Options -->
-        <div style="display:flex;flex-direction:column;gap:8px;min-width:180px;">
-          <div class="toggle-row" style="margin:0;">
-            <label class="toggle"><input type="checkbox" id="enhanceToggle" checked><span class="toggle-slider"></span></label>
-            <span style="font-size:.88em;">Enhance audio</span>
-          </div>
-          <div style="display:flex;gap:8px;">
-            <button id="analyzeBtn" disabled style="padding:9px 20px;font-size:.9em;">▶ Analyze</button>
-            <button id="clearBatchBtn" class="btn-secondary" style="padding:9px 14px;font-size:.9em;display:none;">✕ Clear</button>
-          </div>
-        </div>
-
+    <div class="section">
+      <h2>1. Select File</h2>
+      <div class="upload-area" id="dropZone">
+        <label for="audioInput">
+          📁 <strong>Click to choose a file</strong> or drag &amp; drop<br>
+          <small style="color:#aaa;margin-top:6px;display:block">MP4, MOV, MKV, MP3, AAC, WAV, FLAC, OGG</small>
+        </label>
+        <input type="file" id="audioInput" accept="video/*,audio/*,.mp4,.mov,.mkv,.mp3,.aac,.wav,.flac,.ogg">
       </div>
-      <div class="status" id="progressStatus" style="margin-top:10px;"></div>
+      <div class="file-info" id="fileInfo"></div>
     </div>
 
-    <!-- ── Batch workspace: sidebar + detail panel ── -->
-    <div id="batchWorkspace" style="display:none;">
-      <div style="display:flex;gap:14px;align-items:flex-start;">
-
-        <!-- ── File list sidebar ── -->
-        <div style="width:240px;flex-shrink:0;">
-          <div style="font-size:.78em;color:#aaa;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;">
-            <span id="batchCountLabel">0 files</span>
-            <span id="batchProgressLabel" style="color:#f5a623;"></span>
-          </div>
-          <div id="fileList" style="max-height:520px;overflow-y:auto;border-radius:6px;"></div>
-
-          <!-- Batch download -->
-          <div id="batchDownloadBox" style="margin-top:12px;display:none;">
-            <div style="font-size:.8em;color:#f5a623;margin-bottom:6px;font-weight:bold;">Batch Download</div>
-
-            <!-- Shared format options -->
-            <div style="background:#0f1a30;border-radius:6px;padding:10px 12px;margin-bottom:8px;">
-              <div style="font-size:.76em;color:#aaa;margin-bottom:6px;">Output options (all files)</div>
-              <div style="display:flex;flex-direction:column;gap:5px;">
-                <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:.82em;">
-                  <input type="checkbox" id="chkRawAudio"      checked style="accent-color:#e05252;"> Raw audio
-                </label>
-                <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:.82em;">
-                  <input type="checkbox" id="chkEnhancedAudio"       style="accent-color:#e05252;"> Enhanced audio
-                </label>
-                <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:.82em;">
-                  <input type="checkbox" id="chkEncodedAudio"        style="accent-color:#e05252;"> Encode as M4A
-                </label>
-                <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:.82em;">
-                  <input type="checkbox" id="chkVizData"             style="accent-color:#e05252;"> Visualization data
-                </label>
-              </div>
-            </div>
-
-            <button class="btn-secondary" id="downloadBatchJson" style="width:100%;margin:0 0 6px;font-size:.82em;padding:8px;">
-              ⬇ All Timestamps (JSON)
-            </button>
-            <button id="downloadBatchAll" style="width:100%;margin:0;font-size:.82em;padding:8px;">
-              ⬇ All Files (ZIP)
-            </button>
-          </div>
-        </div>
-
-        <!-- ── Per-file detail panel ── -->
-        <div style="flex:1;min-width:0;">
-          <div id="fileDetail" style="display:none;">
-
-            <!-- File header -->
-            <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap;">
-              <div id="detailFileName" style="font-weight:bold;font-size:1.05em;color:#e0e0e0;"></div>
-              <div id="detailBadge" style="flex-shrink:0;"></div>
-              <div style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap;" id="detailNavBtns">
-                <button class="btn-secondary btn-sm" id="detailPrevBtn">← Prev</button>
-                <button class="btn-secondary btn-sm" id="detailNextBtn">Next →</button>
-              </div>
-            </div>
-
-            <!-- Summary -->
-            <div class="section" style="margin-bottom:14px;">
-              <div id="summaryBox"></div>
-              <ul class="segment-list" id="segmentList" style="margin-top:8px;"></ul>
-            </div>
-
-            <!-- Plot -->
-            <div class="section" style="margin-bottom:14px;">
-              <div id="diagnosticsPlot" data-darkreader-ignore style="min-height:480px;"></div>
-            </div>
-
-            <!-- Audio player + per-file downloads -->
-            <div class="section">
-              <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-start;">
-
-                <!-- Audio player (shown after enhancement) -->
-                <div id="audioPlayerSection" style="flex:1;min-width:200px;display:none;">
-                  <div style="font-size:.82em;color:#aaa;margin-bottom:6px;">Enhanced Audio Preview</div>
-                  <audio id="audioPlayer" controls style="width:100%;"></audio>
-                </div>
-
-                <!-- Per-file download controls -->
-                <div id="audioFormatBox" style="min-width:200px;display:none;">
-                  <div style="font-size:.82em;color:#f5a623;margin-bottom:6px;font-weight:bold;">This File</div>
-                  <button class="btn-secondary btn-sm" id="downloadJson" style="margin-bottom:6px;display:block;width:100%;">⬇ Timestamps (JSON)</button>
-                  <button class="btn-secondary btn-sm" id="downloadDiag" style="margin-bottom:6px;display:block;width:100%;">⬇ Diagnostic (PNG)</button>
-                  <button class="btn-secondary btn-sm" id="downloadAudio" style="margin-bottom:6px;display:block;width:100%;display:none;">⬇ Audio</button>
-                  <button class="btn-secondary btn-sm" id="downloadAll" style="display:block;width:100%;display:none;">⬇ All (ZIP)</button>
-                </div>
-
-              </div>
-            </div>
-
-          </div><!-- /fileDetail -->
-
-          <!-- Empty state -->
-          <div id="fileDetailEmpty" style="color:#555;text-align:center;padding:60px 20px;font-size:.95em;">
-            Select a file from the list to view its results
-          </div>
-        </div>
-
+    <div class="section">
+      <h2>2. Options</h2>
+      <div class="toggle-row">
+        <label class="toggle"><input type="checkbox" id="enhanceToggle" checked><span class="toggle-slider"></span></label>
+        <span>Enhance audio (envelope-shaped, 80–160 Hz)</span>
       </div>
-    </div><!-- /batchWorkspace -->
+      <button id="analyzeBtn" disabled>Analyze</button>
+      <div class="status" id="progressStatus"></div>
+    </div>
+
+    <div class="results" id="resultsSection">
+      <div class="section">
+        <h2>3. Detection Results</h2>
+        <div id="summaryBox"></div>
+        <ul class="segment-list" id="segmentList"></ul>
+      </div>
+      <div class="section">
+        <h2>4. Diagnostic Plot</h2>
+        <div id="diagnosticsPlot"></div>
+      </div>
+      <div class="section" id="audioPlayerSection" style="display:none">
+        <h2>5. Enhanced Audio</h2>
+        <audio id="audioPlayer" controls></audio>
+      </div>
+      <div class="section">
+        <h2>6. Downloads</h2>
+
+        <!-- Audio format toggles (shared with recording log) -->
+        <fieldset id="audioFormatBox" style="border:1px solid #2a3a5e;border-radius:6px;padding:10px 14px;margin-bottom:14px;display:none;">
+          <legend style="color:#f5a623;font-size:.85em;padding:0 6px;">Audio Output Options</legend>
+          <div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:4px;">
+            <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:.88em;">
+              <input type="checkbox" id="chkRawAudio"      checked style="accent-color:#e05252;"> Raw audio (WAV)
+            </label>
+            <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:.88em;">
+              <input type="checkbox" id="chkEnhancedAudio"       style="accent-color:#e05252;"> Enhanced audio
+            </label>
+            <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:.88em;">
+              <input type="checkbox" id="chkEncodedAudio"        style="accent-color:#e05252;"> Encode as M4A
+            </label>
+            <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:.88em;">
+              <input type="checkbox" id="chkVizData"             style="accent-color:#e05252;"> Visualization data (JSON + PNG)
+            </label>
+          </div>
+          <div style="font-size:.76em;color:#555;margin-top:6px;">
+            Multiple files are zipped automatically. Visualization data can reconstruct the diagnostic plot.
+          </div>
+        </fieldset>
+
+        <button class="btn-secondary" id="downloadJson">Timestamps (JSON)</button>
+        <button class="btn-secondary" id="downloadDiag">Diagnostic (PNG)</button>
+        <button class="btn-secondary" id="downloadAudio" style="display:none">Download Audio</button>
+        <button class="btn-secondary" id="downloadAll"   style="display:none">Download All (ZIP)</button>
+      </div>
+    </div>
 
   </div><!-- /panelFile -->
 
@@ -441,7 +349,7 @@ audio{width:100%;margin-top:10px;border-radius:6px;}
       <button id="vizModalClose" style="background:none;border:none;color:#aaa;font-size:1.4em;cursor:pointer;padding:0 4px;">✕</button>
     </div>
     <p style="color:#aaa;font-size:.82em;margin-bottom:10px;" id="vizModalInfo"></p>
-    <div id="vizModalPlot" data-darkreader-ignore style="width:100%;min-height:420px;border-radius:6px;"></div>
+    <div id="vizModalPlot" style="width:100%;min-height:420px;border-radius:6px;"></div>
     <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:14px;">
       <button id="vizModalDlJson" class="btn-secondary" style="border:none;padding:8px 16px;border-radius:5px;cursor:pointer;font-size:.88em;">⬇ JSON data</button>
       <button id="vizModalDlPng"  class="btn-secondary" style="border:none;padding:8px 16px;border-radius:5px;cursor:pointer;font-size:.88em;">⬇ PNG</button>

@@ -194,8 +194,6 @@ function buildVizData(result, wallClockMs, reason) {
         spec_freqs: r.spectrogram ? r.spectrogram.freqs : [],
         spec_times: r.spectrogram ? r.spectrogram.times : [],
         spec_z:     r.spectrogram ? r.spectrogram.z     : [],
-        spec_zmin:  r.spectrogram ? r.spectrogram.zmin  : -80,
-        spec_zmax:  r.spectrogram ? r.spectrogram.zmax  : -10,
     };
 }
 

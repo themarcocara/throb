@@ -245,8 +245,6 @@ async function saveAudioSnap(m, reason) {
                 spec_freqs:  vizResult.spectrogram ? vizResult.spectrogram.freqs : [],
                 spec_times:  vizResult.spectrogram ? vizResult.spectrogram.times : [],
                 spec_z:      vizResult.spectrogram ? vizResult.spectrogram.z     : [],
-                spec_zmin:   vizResult.spectrogram ? vizResult.spectrogram.zmin  : -80,
-                spec_zmax:   vizResult.spectrogram ? vizResult.spectrogram.zmax  : -10,
             };
             vizId = await idbAdd("viz_data", vizData);
         } catch(vizErr) {
@@ -485,8 +483,6 @@ window.downloadEventWav = async function(id) {
                         spec_freqs:res.spectrogram?res.spectrogram.freqs:[],
                         spec_times:res.spectrogram?res.spectrogram.times:[],
                         spec_z:res.spectrogram?res.spectrogram.z:[],
-                        spec_zmin:res.spectrogram?res.spectrogram.zmin:-80,
-                        spec_zmax:res.spectrogram?res.spectrogram.zmax:-10,
                     };}
             }catch(e2){console.warn("viz load row:",e2);}
         }
