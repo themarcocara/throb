@@ -248,153 +248,221 @@ function blobToUint8Array(blob) {
     return blob.arrayBuffer().then(function(ab){return new Uint8Array(ab);});
 }
 
-// ── File tab download listeners ───────────────────────────────────────────────
+// Per-file and batch download handlers are in src/app.js
 
-// Show audio format box and download button once audio is decoded/analysed
-function updateFileTabDownloads() {
-    var hasAudio = pcm !== null;
-    if (hasAudio) {
-        $("audioFormatBox").style.display = "block";
-        $("downloadAudio").style.display  = "inline-block";
-        $("downloadAll").style.display    = "inline-block";
-    }
-}
+async function buildAndDownload(rawPCM, enhPCM, stemName, onStatus, opts) {
+    onStatus = onStatus || statusFile;
 
-$("downloadJson").addEventListener("click", function(){
-    if (!detResult) return;
-    var base = new Date(audioFile.lastModified);
-    var json = detResult.segments.map(function(s,i){ return {
-        index: i+1,
-        start_seconds: +s.start.toFixed(3), end_seconds: +s.end.toFixed(3),
-        start_iso: new Date(base.getTime()+s.start*1000).toISOString(),
-        end_iso:   new Date(base.getTime()+s.end*1000).toISOString(),
-        duration_seconds: +(s.end-s.start).toFixed(3), bpm: +s.bpm.toFixed(1)
-    };});
-    dlBlob(new Blob([JSON.stringify(json,null,2)],{type:"application/json"}), stem()+"_timestamps.json");
-});
-
-$("downloadDiag").addEventListener("click", function(){
-    if (diagnosticPlotDiv) Plotly.downloadImage(diagnosticPlotDiv,{format:"png",width:1400,height:900,filename:stem()+"_diagnostic"});
-});
-
-$("downloadAudio").addEventListener("click", async function(){
-    if (!pcm) return;
-    await buildAndDownload(pcm, enhPCM, stem(), statusFile);
-});
-
-$("downloadAll").addEventListener("click", async function(){
-    if (!detResult) return;
-    statusFile("loading", "Building full zip…");
-
-    // Collect audio files
-    var audioFiles = [];
-    var opts = {
-        wantRaw:      $("chkRawAudio").checked,
-        wantEnhanced: $("chkEnhancedAudio").checked,
-        wantEncoded:  $("chkEncodedAudio").checked,
-    };
-
-    // Compute enhanced if needed
-    var resolvedEnh = enhPCM;
-    if (opts.wantEnhanced && !resolvedEnh && pcm) {
-        statusFile("loading", "Running enhancement…");
-        try { resolvedEnh = new Float32Array(await runEnhanceInWorker(pcm)); } catch(e) {}
-    }
-
-    if (opts.wantRaw && pcm) {
-        if (opts.wantEncoded) {
-            var b = await exportM4a(pcm, SR, statusFile);
-            if (b) audioFiles.push({name: stem()+"_raw.m4a",      blob: b});
-        } else {
-            audioFiles.push({name: stem()+"_raw.wav", blob: pcmToWav(pcm, SR)});
-        }
-    }
-    if (opts.wantEnhanced && resolvedEnh) {
-        if (opts.wantEncoded) {
-            var b = await exportM4a(resolvedEnh, SR, statusFile);
-            if (b) audioFiles.push({name: stem()+"_enhanced.m4a", blob: b});
-        } else {
-            audioFiles.push({name: stem()+"_enhanced.wav", blob: pcmToWav(resolvedEnh, SR)});
-        }
-    }
-
-    // Viz data from current file analysis result
-    var fileVizData = null;
-    if (opts.wantViz && detResult) {
-        fileVizData = {
-            wall_clock_ms: audioFile ? audioFile.lastModified : Date.now(),
-            reason: "file_analysis", sr: SR,
-            duration:    detResult.duration,    detected:    detResult.detected,
-            detected_at: detResult.detected_at, bpm:         detResult.bpm,
-            strength:    detResult.strength,    threshold:   detResult.threshold,
-            segments:    detResult.segments,
-            times:           Array.from(detResult.times           || []),
-            strengths:       Array.from(detResult.strengths       || []),
-            confidences:     Array.from(detResult.confidences     || []),
-            masking_factors: Array.from(detResult.masking_factors || []),
-            corrFull:        Array.from(detResult.corrFull        || []),
-            masking_detected:     detResult.masking_detected,
-            masking_duration_s:   detResult.masking_duration_s,
-            mask_end_estimate:    detResult.mask_end_estimate,
-            throb_predates_mask:  detResult.throb_predates_mask,
-            detection_method:     detResult.detection_method,
-            spec_freqs: detResult.spectrogram ? detResult.spectrogram.freqs : [],
-            spec_times: detResult.spectrogram ? detResult.spectrogram.times : [],
-            spec_z:     detResult.spectrogram ? detResult.spectrogram.z     : [],
+    // Read options from checkboxes if not provided
+    if (!opts) {
+        opts = {
+            wantRaw:      $("chkRawAudio")      ? $("chkRawAudio").checked      : true,
+            wantEnhanced: $("chkEnhancedAudio")  ? $("chkEnhancedAudio").checked  : false,
+            wantEncoded:  $("chkEncodedAudio")   ? $("chkEncodedAudio").checked   : false,
+            wantViz:      $("chkVizData")        ? $("chkVizData").checked        : false,
         };
-        opts.vizData = fileVizData;
     }
 
-    // JSON timestamps
-    var base = new Date(audioFile.lastModified);
-    var jsonData = detResult.segments.map(function(s,i){return{
-        index:i+1, start_seconds:+s.start.toFixed(3), end_seconds:+s.end.toFixed(3),
-        start_iso:new Date(base.getTime()+s.start*1000).toISOString(),
-        end_iso:new Date(base.getTime()+s.end*1000).toISOString(),
-        duration_seconds:+(s.end-s.start).toFixed(3), bpm:+s.bpm.toFixed(1)
-    };});
-    var jsonBlob = new Blob([JSON.stringify(jsonData,null,2)],{type:"application/json"});
-
-    // Viz files
-    var vizFiles = [];
-    if (opts.wantViz && fileVizData) {
-        var vizExport = Object.assign({}, fileVizData); delete vizExport.spec_z;
-        vizFiles.push({name:stem()+"_viz.json", blob:new Blob([JSON.stringify(vizExport,null,2)],{type:"application/json"})});
-        if (fileVizData.spec_z && fileVizData.spec_z.length) {
-            vizFiles.push({name:stem()+"_spectrogram.json", blob:new Blob([JSON.stringify({freqs:fileVizData.spec_freqs,times:fileVizData.spec_times,z:fileVizData.spec_z})],{type:"application/json"})});
+    // Compute enhanced if requested and not provided
+    if (opts.wantEnhanced && !enhPCM && rawPCM) {
+        onStatus("loading", "Running enhancement…");
+        try {
+            var buf = await runEnhanceInWorker(rawPCM);
+            enhPCM = new Float32Array(buf);
+        } catch(e) {
+            onStatus("error", "Enhancement failed: " + e.message);
+            return;
         }
+    }
+
+    // Collect file entries: { name, blob }
+    var files = [];
+
+    if (opts.wantRaw && rawPCM) {
+        if (opts.wantEncoded) {
+            onStatus("loading", "Encoding raw audio as M4A…");
+            var blob = await exportM4a(rawPCM, SR, onStatus);
+            if (blob) files.push({ name: stemName + "_raw.m4a", blob });
+        } else {
+            files.push({ name: stemName + "_raw.wav", blob: pcmToWav(rawPCM, SR) });
+        }
+    }
+
+    if (opts.wantEnhanced && enhPCM) {
+        if (opts.wantEncoded) {
+            onStatus("loading", "Encoding enhanced audio as M4A…");
+            var blob = await exportM4a(enhPCM, SR, onStatus);
+            if (blob) files.push({ name: stemName + "_enhanced.m4a", blob });
+        } else {
+            files.push({ name: stemName + "_enhanced.wav", blob: pcmToWav(enhPCM, SR) });
+        }
+    }
+
+    // Add visualization files if requested
+    if (opts.wantViz && opts.vizData) {
+        // JSON (without spec_z which can be large — store it separately)
+        var vizExport = Object.assign({}, opts.vizData);
+        delete vizExport.spec_z;
+        files.push({ name: stemName + "_viz.json",
+                     blob: new Blob([JSON.stringify(vizExport,null,2)],{type:"application/json"}) });
+        // Spectrogram data separately if present
+        if (opts.vizData.spec_z && opts.vizData.spec_z.length) {
+            var specExport = { freqs: opts.vizData.spec_freqs, times: opts.vizData.spec_times, z: opts.vizData.spec_z };
+            files.push({ name: stemName + "_spectrogram.json",
+                         blob: new Blob([JSON.stringify(specExport)],{type:"application/json"}) });
+        }
+        // PNG: render to a hidden div, screenshot, then remove
         if (typeof Plotly !== "undefined") {
             try {
-                var hd=document.createElement("div");
-                hd.style.cssText="position:fixed;left:-9999px;top:0;width:1200px;height:700px;";
-                document.body.appendChild(hd);
-                renderVizPlot(hd, fileVizData);
-                var pu=await Plotly.toImage(hd,{format:"png",width:1400,height:860});
-                document.body.removeChild(hd);
-                var pb64=pu.split(",")[1];
-                var pby=Uint8Array.from(atob(pb64),function(c){return c.charCodeAt(0);});
-                vizFiles.push({name:stem()+"_viz.png",blob:new Blob([pby],{type:"image/png"})});
-            } catch(e2){console.warn("viz png:",e2);}
+                var hiddenDiv = document.createElement("div");
+                hiddenDiv.style.cssText="position:fixed;left:-9999px;top:0;width:1200px;height:700px;";
+                document.body.appendChild(hiddenDiv);
+                renderVizPlot(hiddenDiv, opts.vizData);
+                var pngDataUrl = await Plotly.toImage(hiddenDiv,{format:"png",width:1400,height:860});
+                document.body.removeChild(hiddenDiv);
+                var pngBase64 = pngDataUrl.split(",")[1];
+                var pngBytes  = Uint8Array.from(atob(pngBase64), function(c){return c.charCodeAt(0);});
+                files.push({ name: stemName + "_viz.png",
+                             blob: new Blob([pngBytes],{type:"image/png"}) });
+            } catch(vizPngErr) { console.warn("viz PNG failed:", vizPngErr); }
         }
     }
 
-    var allFiles = [{name:stem()+"_timestamps.json",blob:jsonBlob}].concat(audioFiles).concat(vizFiles);
+    if (!files.length) {
+        onStatus("error", "No output format selected. Check at least one option.");
+        return;
+    }
 
-    statusFile("loading", "Compressing " + allFiles.length + " files…");
-    var zipBlob = await buildZip(allFiles);
-    dlBlob(zipBlob, stem()+"_throb_results.zip");
-    statusFile("success", "✓ Downloaded zip with "+allFiles.length+" file(s).");
-});
-
-// When enhPCM becomes available, play it in the file-tab audio player
-// (called from onWorkerMsg when type==="enhanced")
-function onEnhancedReady(enhancedFloat32) {
-    enhPCM = enhancedFloat32;
-    var wav = pcmToWav(enhPCM, SR);
-    $("audioPlayer").src = URL.createObjectURL(wav);
-    $("audioPlayerSection").style.display = "block";
-    updateFileTabDownloads();
+    if (files.length === 1) {
+        dlBlob(files[0].blob, files[0].name);
+        onStatus("success", "✓ Downloaded: " + files[0].name);
+    } else {
+        onStatus("loading", "Building zip…");
+        var zipBlob = await buildZip(files);
+        dlBlob(zipBlob, stemName + "_audio.zip");
+        onStatus("success", "✓ Downloaded zip with " + files.length + " files.");
+    }
 }
+
+// Lightweight synchronous zip builder (STORE + DEFLATE-less for simplicity;
+// uses DecompressionStream/CompressionStream if available, otherwise STORE)
+async function buildZip(files) {
+    // We use the native Compression Streams API (Chrome 80+, Firefox 113+)
+    // to deflate each file. Fall back to STORE if unavailable.
+    var entries = [];
+    var dataOffset = 0;
+
+    for (var i = 0; i < files.length; i++) {
+        var f = files[i];
+        var rawBytes = await blobToUint8Array(f.blob);
+        var compressed = rawBytes;
+        var method = 0;  // STORE
+
+        if (typeof CompressionStream !== "undefined") {
+            try {
+                var cs = new CompressionStream("deflate-raw");
+                var writer = cs.writable.getWriter();
+                writer.write(rawBytes);
+                writer.close();
+                var chunks = [];
+                var reader = cs.readable.getReader();
+                while (true) {
+                    var r = await reader.read();
+                    if (r.done) break;
+                    chunks.push(r.value);
+                }
+                var totalLen = chunks.reduce(function(a,c){return a+c.length;},0);
+                compressed = new Uint8Array(totalLen);
+                var pos = 0;
+                for (var j=0;j<chunks.length;j++){compressed.set(chunks[j],pos);pos+=chunks[j].length;}
+                method = 8;  // DEFLATE
+            } catch(e) {
+                compressed = rawBytes; method = 0;
+            }
+        }
+
+        var nameBytes = new TextEncoder().encode(f.name);
+        var crc = crc32(rawBytes);
+        var now = new Date();
+        var dosDate = ((now.getFullYear()-1980)<<9)|((now.getMonth()+1)<<5)|now.getDate();
+        var dosTime = (now.getHours()<<11)|(now.getMinutes()<<5)|(now.getSeconds()>>1);
+
+        // Local file header
+        var lfh = new DataView(new ArrayBuffer(30 + nameBytes.length));
+        setU32(lfh,0,0x04034b50); setU16(lfh,4,20); setU16(lfh,6,0);
+        setU16(lfh,8,method); setU16(lfh,10,dosTime); setU16(lfh,12,dosDate);
+        setU32(lfh,14,crc); setU32(lfh,18,compressed.length); setU32(lfh,22,rawBytes.length);
+        setU16(lfh,26,nameBytes.length); setU16(lfh,28,0);
+        new Uint8Array(lfh.buffer).set(nameBytes, 30);
+
+        entries.push({
+            name: nameBytes, crc, method,
+            rawLen: rawBytes.length, compLen: compressed.length,
+            dosDate, dosTime,
+            lfhOffset: dataOffset,
+            lfhBytes: new Uint8Array(lfh.buffer),
+            data: compressed,
+        });
+        dataOffset += lfh.buffer.byteLength + compressed.length;
+    }
+
+    // Central directory
+    var cdParts = [];
+    var cdSize = 0;
+    for (var i = 0; i < entries.length; i++) {
+        var e = entries[i];
+        var cd = new DataView(new ArrayBuffer(46 + e.name.length));
+        setU32(cd,0,0x02014b50); setU16(cd,4,20); setU16(cd,6,20); setU16(cd,8,0);
+        setU16(cd,10,e.method); setU16(cd,12,e.dosTime); setU16(cd,14,e.dosDate);
+        setU32(cd,16,e.crc); setU32(cd,20,e.compLen); setU32(cd,24,e.rawLen);
+        setU16(cd,28,e.name.length); setU16(cd,30,0); setU16(cd,32,0);
+        setU16(cd,34,0); setU16(cd,36,0); setU32(cd,38,0); setU32(cd,42,e.lfhOffset);
+        new Uint8Array(cd.buffer).set(e.name, 46);
+        cdParts.push(new Uint8Array(cd.buffer));
+        cdSize += cd.buffer.byteLength;
+    }
+
+    // End of central directory
+    var eocd = new DataView(new ArrayBuffer(22));
+    setU32(eocd,0,0x06054b50); setU16(eocd,4,0); setU16(eocd,6,0);
+    setU16(eocd,8,entries.length); setU16(eocd,10,entries.length);
+    setU32(eocd,12,cdSize); setU32(eocd,16,dataOffset); setU16(eocd,20,0);
+
+    // Assemble
+    var parts = [];
+    for (var i=0;i<entries.length;i++){parts.push(entries[i].lfhBytes);parts.push(entries[i].data);}
+    for (var i=0;i<cdParts.length;i++) parts.push(cdParts[i]);
+    parts.push(new Uint8Array(eocd.buffer));
+
+    var totalLen = parts.reduce(function(a,p){return a+p.length;},0);
+    var out = new Uint8Array(totalLen), pos = 0;
+    for (var i=0;i<parts.length;i++){out.set(parts[i],pos);pos+=parts[i].length;}
+    return new Blob([out], {type:"application/zip"});
+}
+
+function setU16(dv,off,v){dv.setUint16(off,v,true);}
+function setU32(dv,off,v){dv.setUint32(off,v,true);}
+
+function crc32(bytes) {
+    var table = crc32._t;
+    if (!table) {
+        table = crc32._t = new Uint32Array(256);
+        for (var i=0;i<256;i++){
+            var c=i;
+            for(var j=0;j<8;j++) c=c&1?(0xEDB88320^(c>>>1)):c>>>1;
+            table[i]=c;
+        }
+    }
+    var crc = 0xFFFFFFFF;
+    for (var i=0;i<bytes.length;i++) crc=table[(crc^bytes[i])&0xFF]^(crc>>>8);
+    return (crc^0xFFFFFFFF)>>>0;
+}
+
+function blobToUint8Array(blob) {
+    return blob.arrayBuffer().then(function(ab){return new Uint8Array(ab);});
+}
+
+// Per-file and batch download handlers are in src/app.js
 
 // ─────────────────────────────────────────────────────────────────────────────
 // M4A EXPORT (staged fallback — shared by file + recording)
