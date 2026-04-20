@@ -169,6 +169,12 @@ function onWorkletMessage(e) {
         if($("periodicToggle").checked){
             updatePeriodicLabel(true, m.periodicAcc||0);
         }
+        // Enable Save 10s Now only once ring has ≥0.5s buffered
+        // (the hard minimum for detect+spectrogram to work)
+        if(m.bufferedSecs !== undefined) {
+            var snapBtn = $("snapNowBtn");
+            if(snapBtn) snapBtn.disabled = m.bufferedSecs < 0.5;
+        }
     }
     else if(m.type==="stateChange"){
         var dot=$("recDot"),lbl=$("recStateLabel");
@@ -199,6 +205,19 @@ function onWorkletMessage(e) {
 async function saveAudioSnap(m, reason) {
     try {
         var snapArr = new Float32Array(m.audioSnap);
+
+        // Guard: reject snaps that are too short to be useful.
+        // nfft=2048 (128ms) is the hard minimum for spectrogram();
+        // we use 0.5s as a practical floor so detect() has enough context.
+        var MIN_SNAP_SAMPLES = Math.floor(SR * 0.5);  // 8000 samples @ 16kHz
+        if (snapArr.length < MIN_SNAP_SAMPLES) {
+            console.warn('saveAudioSnap: snap too short (' + snapArr.length +
+                ' samples, need ' + MIN_SNAP_SAMPLES + ') — discarding.');
+            statusRec('info', '⚠ Snap discarded: too short (' +
+                (snapArr.length / SR * 1000).toFixed(0) + 'ms). ' +
+                'Wait at least 0.5s after starting recording.');
+            return;
+        }
         // Respect the "save audio" toggle — when off, store null and skip audio blob
         var saveAudio = !$("saveAudioToggle") || $("saveAudioToggle").checked;
         var wavBlob   = saveAudio ? pcmToWav(snapArr, SR) : null;

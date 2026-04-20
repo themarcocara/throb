@@ -283,6 +283,7 @@ class ThrobProcessor extends AudioWorkletProcessor {
                 wallMs:         Date.now(),
                 periodicAcc:       this._periodicAcc / SR,
                 periodicInterval:  this._periodicInterval / SR,
+                bufferedSecs:      this._samplesIn / SR,  // how much audio is in ring
             };
             this._lastTelemetry = telem;
             this.port.postMessage(telem);

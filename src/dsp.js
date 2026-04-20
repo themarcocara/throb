@@ -165,6 +165,12 @@ function spectrogram(signal, sr) {
     // hop=256 for smooth time axis (~16 ms steps)
     var nfft=2048, hop=256, N=nextPow2(nfft);
 
+    // Guard: audio must be at least nfft samples long for even one frame.
+    // Return an empty-but-valid spectrogram so callers don't crash.
+    if (!signal || signal.length < nfft) {
+        return { freqs:[], times:[], z:[], zmin:-80, zmax:-10 };
+    }
+
     // Normalise signal amplitude so dB values are comparable across devices/recordings
     var maxAmp=0;
     for(var i=0;i<signal.length;i++) if(Math.abs(signal[i])>maxAmp) maxAmp=Math.abs(signal[i]);
@@ -298,6 +304,24 @@ function envelope(signal,win){
 //   peak_masking_ratio, mean_ac_while_masked, throb_predates_mask
 
 function detect(audio, sr, params) {
+    // Guard: need at least one analysis window. Return safe no-detection result
+    // rather than crashing callers (e.g. spectrogram() needs nfft=2048 samples).
+    var _wSec = (params&&params.windowSec) || 2.0;
+    var _minN = Math.ceil(_wSec * (sr||16000));
+    if (!audio || audio.length < _minN) {
+        return {
+            detected:false, detected_at:null, bpm:0, strength:0,
+            threshold:(params&&params.threshold)||0.40,
+            duration: audio ? audio.length/(sr||16000) : 0,
+            segments:[], times:[], strengths:[], confidences:[],
+            masking_factors:[], context_masked_arr:[], corrFull:[],
+            masking_detected:false, masking_duration_s:0,
+            mask_end_estimate:null, throb_predates_mask:false,
+            mean_ac_while_masked:null, peak_masking_ratio:0,
+            masked_snr_at_detection:0, detection_method:'insufficient_audio',
+            spectrogram:{freqs:[],times:[],z:[],zmin:-80,zmax:-10},
+        };
+    }
     var loHz      = (params&&params.loHz)      || 80;
     var hiHz      = (params&&params.hiHz)      || 160;
     var refLoHz   = (params&&params.refLoHz)   || 300;
