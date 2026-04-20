@@ -58,6 +58,7 @@ class ThrobProcessor extends AudioWorkletProcessor {
         this._ringHead  = 0;
         this._samplesIn = 0;
         this._hopAcc    = 0;
+        this._dsAccum   = 0.0;  // fractional downsampling accumulator
         this._dspReady  = false;
         // State machine
         this._state         = 'IDLE';
@@ -112,14 +113,23 @@ class ThrobProcessor extends AudioWorkletProcessor {
         const chunk = input[0];
         const ratio = sampleRate / SR;
 
-        // Write to ring buffer (downsample to SR)
+        // Downsample input to SR (16 kHz) using a fractional accumulator.
+        // _dsAccum tracks our position in the input chunk at SR resolution.
+        // We advance by 1/ratio per input sample and write to the ring only
+        // when the accumulator crosses an integer boundary — i.e. exactly once
+        // per output (16 kHz) sample. This ensures _samplesIn, _hopAcc, and
+        // _periodicAcc all count ring-buffer (16 kHz) samples, not input samples.
         for (let i = 0; i < chunk.length; i++) {
-            const srcIdx = Math.floor(i * ratio);
-            this._ring[this._ringHead] = chunk[Math.min(srcIdx, chunk.length-1)];
-            this._ringHead = (this._ringHead + 1) % RING_LEN;
-            this._samplesIn++;
-            this._hopAcc++;
-            this._periodicAcc++;
+            this._dsAccum += 1.0;
+            if (this._dsAccum >= ratio) {
+                this._dsAccum -= ratio;
+                const srcIdx = Math.min(i, chunk.length - 1);
+                this._ring[this._ringHead] = chunk[srcIdx];
+                this._ringHead = (this._ringHead + 1) % RING_LEN;
+                this._samplesIn++;
+                this._hopAcc++;
+                this._periodicAcc++;
+            }
         }
 
         // Run detection hop
