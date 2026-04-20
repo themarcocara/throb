@@ -51,3 +51,47 @@ function statusRec(type, msg) {
     el.className = "status " + type + " active";
     el.innerHTML = (type === "loading" ? '<span class="spinner"></span>' : "") + msg;
 }
+
+// ── Calibration offset (dBFS → dBSPL) ────────────────────────────────────────
+// Default offsets derived from NIOSH/ASA research (Kardous & Shaw 2014/2016).
+// iOS devices are consistent; Android is highly variable so defaults are lower.
+var _CAL_DEFAULT_IOS     = 105;   // iPhone 11–15 consensus
+var _CAL_DEFAULT_ANDROID =  95;   // conservative Android default
+
+function calDefaultOffset() {
+    var ua = navigator.userAgent || '';
+    if (/iPad|iPhone|iPod/.test(ua) && !window.MSStream) return _CAL_DEFAULT_IOS;
+    return _CAL_DEFAULT_ANDROID;
+}
+
+function calGetOffset() {
+    try {
+        var s = localStorage.getItem('throb_cal_offset');
+        if (s !== null && !isNaN(+s)) return +s;
+    } catch(e) {}
+    return calDefaultOffset();
+}
+
+function calSetOffset(v) {
+    try { localStorage.setItem('throb_cal_offset', String(+v)); } catch(e) {}
+}
+
+function calGetMethod() {
+    try { return localStorage.getItem('throb_cal_method') || 'default'; } catch(e) { return 'default'; }
+}
+
+function calSetMethod(m) {
+    try { localStorage.setItem('throb_cal_method', m); } catch(e) {}
+}
+
+// Format a dB result object for display
+function fmtDb(dbResult) {
+    if (!dbResult) return { throb: '—', overall: '—', laeq: '—', snr: '—', corrected: '—' };
+    var throb  = dbResult.dbspl_throb  !== null ? dbResult.dbspl_throb.toFixed(1)  + ' dB'  : '—';
+    var corr   = dbResult.throb_corrected_db !== null ? dbResult.throb_corrected_db.toFixed(1) + ' dB' : '—';
+    var laeq   = dbResult.laeq_throb   !== null ? dbResult.laeq_throb.toFixed(1)   + ' dBA' : '—';
+    var overall= dbResult.dbspl_overall !== null ? dbResult.dbspl_overall.toFixed(1) + ' dB'  : '—';
+    var snr    = dbResult.snr_db        !== null ? (dbResult.snr_db > 0 ? '+' : '') + dbResult.snr_db.toFixed(1) + ' dB' : '—';
+    var clip   = dbResult.clipping_fraction > 0.001 ? ' ⚠️ clip' : '';
+    return { throb, corrected: corr, laeq, overall, snr, clip };
+}

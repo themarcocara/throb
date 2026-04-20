@@ -334,7 +334,10 @@ function onDetected(result) {
     job.detResult = result;
     detResult = result; // compat alias
 
-    // Render immediately so the user can see it while enhancement runs
+    // Run dB measurement and attach to result (non-blocking)
+    runMeasureDb(result, job.pcm, idx);
+
+    // Render immediately so the user can see it while enhancement/dB runs
     if (activeIdx === idx) {
         renderResults(result);
         updateFileTabDownloads();
@@ -397,10 +400,30 @@ function renderResults(r) {
                 + " &nbsp;|&nbsp; Peak ratio: " + r.peak_masking_ratio.toFixed(2) + "x"
                 + "</div>";
         }
+        var dbStr = "";
+        if (r._dbResult) {
+            var d = r._dbResult;
+            var throbStr  = d.dbspl_throb  !== null ? d.dbspl_throb.toFixed(1)  + " dB"  : "—";
+            var laeqStr   = d.laeq_throb   !== null ? d.laeq_throb.toFixed(1)   + " dBA" : "—";
+            var snrStr    = d.snr_db        !== null ? (d.snr_db > 0?"+":"")    + d.snr_db.toFixed(1) + " dB" : "—";
+            var bgStr     = d.dbspl_bg      !== null ? d.dbspl_bg.toFixed(1)    + " dB"  : "—";
+            var clipWarn  = d.clipping_fraction > 0.001 ? " <span style='color:#e74c3c;'>⚠ clipping</span>" : "";
+            dbStr = "<div style='background:#0a1a2e;border:1px solid #2a3a5e;border-radius:4px;"
+                  + "padding:7px 12px;margin-top:8px;font-size:.83em;display:flex;gap:18px;flex-wrap:wrap;'>"
+                  + "<span><span style='color:#aaa;'>Throb dBSPL</span> <strong style='color:#7ec8e3;'>" + throbStr + "</strong></span>"
+                  + "<span><span style='color:#aaa;'>LAeq</span> <strong style='color:#7ec8e3;'>" + laeqStr + "</strong></span>"
+                  + "<span><span style='color:#aaa;'>SNR</span> <strong style='color:#7ec8e3;'>" + snrStr + "</strong></span>"
+                  + "<span><span style='color:#aaa;'>BG noise</span> <strong style='color:#888;'>" + bgStr + "</strong></span>"
+                  + clipWarn
+                  + "<span style='color:#555;font-size:.9em;'>offset: " + d.offset_db + " dB "
+                  + "<button class='btn-secondary btn-sm' style='padding:1px 7px;font-size:.78em;' "
+                  + "onclick='openCalModal()'>⚙ Calibrate</button></span>"
+                  + "</div>";
+        }
         $("summaryBox").innerHTML = "<p style='color:#2ecc71;font-weight:bold;margin-bottom:8px'>"
             + "\u2705 Throb detected at " + (r.detected_at !== null ? r.detected_at.toFixed(2) : "?") + "s"
             + " \u2014 " + r.segments.length + " segment(s), ~" + r.bpm.toFixed(0) + " BPM"
-            + "  (strength " + r.strength.toFixed(3) + " / threshold " + r.threshold + ")</p>" + maskCtx;
+            + "  (strength " + r.strength.toFixed(3) + " / threshold " + r.threshold + ")</p>" + maskCtx + dbStr;
     } else {
         $("summaryBox").innerHTML = "<p style='color:#e74c3c;font-weight:bold;margin-bottom:12px'>"
             + "\u274C No throb detected (strength " + r.strength.toFixed(3) + " below threshold " + r.threshold + ")</p>";
@@ -723,6 +746,45 @@ $("downloadBatchAll").addEventListener("click", async function() {
 // ─────────────────────────────────────────────────────────────────────────────
 // DOWNLOAD HELPERS (extend download.js)
 // ─────────────────────────────────────────────────────────────────────────────
+// ── dB measurement for file analysis ─────────────────────────────────────────
+
+function runMeasureDb(detResult, pcmSamples, jobIdx) {
+    if (!pcmSamples) return;
+    try {
+        var w   = getEnhWorker();  // reuse dedicated on-demand worker
+        var buf = pcmSamples.buffer.slice(0);
+        w.onmessage = function(e) {
+            if (e.data.type === "dbMeasured") {
+                w.onmessage = null;
+                var dbResult = e.data.result;
+                // Attach to the job and detResult
+                if (jobIdx >= 0 && jobIdx < batch.length) {
+                    batch[jobIdx].dbResult = dbResult;
+                    if (batch[jobIdx].detResult) batch[jobIdx].detResult._dbResult = dbResult;
+                }
+                // Re-render if this is the active job
+                if (activeIdx === jobIdx && batch[jobIdx] && batch[jobIdx].detResult) {
+                    renderResults(batch[jobIdx].detResult);
+                }
+            } else if (e.data.type !== "ready") {
+                w.onmessage = null;
+            }
+        };
+        w.postMessage({
+            task:      "measureDb",
+            audio:     buf,
+            sampleRate: SR,
+            detResult: detResult ? {
+                detected: detResult.detected,
+                segments: detResult.segments,
+            } : null,
+            offset_db: calGetOffset(),
+        }, [buf]);
+    } catch(e) {
+        console.warn("runMeasureDb failed:", e);
+    }
+}
+
 function buildFileVizData(r, file) {
     return {
         wall_clock_ms: file ? file.lastModified : Date.now(),

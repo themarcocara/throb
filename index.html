@@ -258,11 +258,13 @@ audio{width:100%;margin-top:10px;border-radius:6px;}
     .rec-header { gap: 8px; }
     .rec-timer { font-size: 1.1em; }
 
-    /* Event table: hide less critical columns */
+    /* Event table: hide less critical columns on mobile */
     .event-table th:nth-child(5),
     .event-table td:nth-child(5),
     .event-table th:nth-child(6),
-    .event-table td:nth-child(6) { display: none; }
+    .event-table td:nth-child(6),
+    .event-table th:nth-child(8),
+    .event-table td:nth-child(8) { display: none; }
 
     /* Modal: full-width on narrow screens */
     .modal-box { padding: 18px 16px; }
@@ -534,7 +536,10 @@ audio{width:100%;margin-top:10px;border-radius:6px;}
         <strong>throb detection end</strong> (10s before + 5s after),
         <strong>periodic snapshots</strong> (if enabled), and <strong>Save 10s Now</strong>.
       </div>
-      <div style="margin-top:8px;font-size:.8em;color:#555;" id="heartbeatLabel">Last heartbeat: —</div>
+      <div style="display:flex;align-items:center;gap:10px;margin-top:8px;flex-wrap:wrap;">
+        <div style="font-size:.8em;color:#555;" id="heartbeatLabel">Last heartbeat: —</div>
+        <button class="btn-secondary btn-sm" onclick="openCalModal()" style="font-size:.76em;padding:3px 10px;margin-left:auto;">🎚 Calibrate dB</button>
+      </div>
     </div>
 
     <!-- Live telemetry -->
@@ -602,11 +607,12 @@ audio{width:100%;margin-top:10px;border-radius:6px;}
               <th>Confidence</th>
               <th>Masking</th>
               <th>Duration</th>
+              <th title="dBSPL throb-band / LAeq / SNR">dB SPL</th>
               <th>Actions</th>
             </tr>
           </thead>
           <tbody id="eventTableBody">
-            <tr><td colspan="8" class="no-events">No events yet. Start recording to begin monitoring.</td></tr>
+            <tr><td colspan="9" class="no-events">No events yet. Start recording to begin monitoring.</td></tr>
           </tbody>
         </table>
       </div>
@@ -709,6 +715,211 @@ audio{width:100%;margin-top:10px;border-radius:6px;}
 <script src="src/viz.js"></script>
 <script src="src/recording.js"></script>
 <script src="src/app.js"></script>
+
+<!-- ── Calibration Modal ─────────────────────────────────────────────────── -->
+<div class="modal-overlay" id="calModal">
+  <div class="modal-box" style="max-width:520px;width:95%;max-height:90vh;overflow-y:auto;">
+    <h3>🎚 Microphone Calibration</h3>
+    <p style="font-size:.82em;color:#aaa;margin-bottom:12px;line-height:1.5;">
+      Converts dBFS (digital full scale) to dBSPL (physical sound pressure level).
+      Two-point calibration anchors both the noise floor and a mid-level reference
+      for better accuracy across the full dynamic range.
+    </p>
+
+    <!-- Status bar: current offset + method + live reading -->
+    <div style="background:#0f1a30;border-radius:6px;padding:10px 14px;margin-bottom:14px;
+                display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+      <div>
+        <div style="font-size:.72em;color:#aaa;">Active offset</div>
+        <div style="font-size:1.5em;font-variant-numeric:tabular-nums;color:#f5a623;"
+             id="calOffsetDisplay">+105 dB</div>
+      </div>
+      <div>
+        <div style="font-size:.72em;color:#aaa;">Method</div>
+        <div style="font-size:.85em;color:#e0e0e0;" id="calMethodDisplay">Default (iOS)</div>
+      </div>
+      <div style="margin-left:auto;text-align:right;">
+        <div style="font-size:.72em;color:#aaa;">Live mic level</div>
+        <div style="font-size:.95em;font-variant-numeric:tabular-nums;color:#7ec8e3;"
+             id="calLiveReading">— dB</div>
+      </div>
+    </div>
+
+    <!-- Method tabs -->
+    <div style="display:flex;gap:4px;margin-bottom:14px;flex-wrap:wrap;">
+      <button class="btn-sm"           id="calTabDefault" onclick="calSelectTab('default')" style="font-size:.8em;">🎛 Platform default</button>
+      <button class="btn-sm btn-secondary" id="calTabDual"   onclick="calSelectTab('dual')"    style="font-size:.8em;">📐 Two-point (recommended)</button>
+      <button class="btn-sm btn-secondary" id="calTabQuiet"  onclick="calSelectTab('quiet')"   style="font-size:.8em;">🔇 Quiet room only</button>
+      <button class="btn-sm btn-secondary" id="calTabVoice"  onclick="calSelectTab('voice')"   style="font-size:.8em;">🗣 Voice only</button>
+      <button class="btn-sm btn-secondary" id="calTabManual" onclick="calSelectTab('manual')"  style="font-size:.8em;">✏ Manual</button>
+    </div>
+
+    <!-- ── Platform default panel ── -->
+    <div id="calPanelDefault" style="font-size:.85em;line-height:1.6;">
+      <p>Apply a research-based default offset from NIOSH/ASA acoustic studies
+        (Kardous &amp; Shaw 2014/2016). Accuracy: <strong>±3–5 dB</strong>.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0;">
+        <button class="btn-secondary btn-sm" onclick="calApplyDefault('ios')"     style="font-size:.82em;">📱 iPhone (+105 dB)</button>
+        <button class="btn-secondary btn-sm" onclick="calApplyDefault('android')" style="font-size:.82em;">🤖 Android (+95 dB)</button>
+        <button class="btn-secondary btn-sm" onclick="calApplyDefault('auto')"    style="font-size:.82em;">🔍 Auto-detect</button>
+      </div>
+      <p style="color:#555;font-size:.78em;margin-top:6px;">
+        iPhone offsets: 6/6s ≈ +100, 7/8/X ≈ +106, 11/12/13 ≈ +107, 14/15/16 ≈ +110.<br>
+        Android: highly variable; use two-point calibration for best results.
+      </p>
+    </div>
+
+    <!-- ── Two-point calibration panel ── -->
+    <div id="calPanelDual" style="display:none;font-size:.85em;line-height:1.6;">
+      <p style="margin-bottom:10px;">
+        Anchors two reference levels to reduce single-measurement error.
+        Both steps are optional — skip either if not currently feasible.
+        The final offset is the <strong>average of completed steps</strong>
+        (or whichever single step was done).
+      </p>
+
+      <!-- Step 1: Quiet room -->
+      <div style="background:#0a1520;border:1px solid #1a2a3e;border-radius:6px;
+                  padding:10px 12px;margin-bottom:10px;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
+          <span style="font-weight:bold;color:#7ec8e3;">Step 1 — Quiet room</span>
+          <span id="dualStep1Badge" style="font-size:.75em;padding:2px 8px;border-radius:8px;
+                background:#2a2a3e;color:#666;">not done</span>
+        </div>
+        <p style="color:#aaa;margin-bottom:8px;">
+          In a quiet room with no traffic, fans, or music.
+          Typical ambient level: <strong>30–35 dBSPL</strong>.
+        </p>
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
+          <label style="color:#aaa;font-size:.82em;">Reference:</label>
+          <input type="number" id="dualQuietTarget" value="35" min="20" max="50"
+            style="width:56px;background:#1a2a4e;color:#e0e0e0;border:1px solid #2a3a5e;
+                   border-radius:4px;padding:3px 7px;font-size:.9em;text-align:center;">
+          <span style="font-size:.82em;">dBSPL &nbsp;·&nbsp; duration:</span>
+          <select id="dualQuietSecs"
+            style="background:#1a2a4e;color:#e0e0e0;border:1px solid #2a3a5e;border-radius:4px;padding:3px 7px;font-size:.82em;">
+            <option value="3">3 s</option>
+            <option value="5" selected>5 s (recommended)</option>
+            <option value="10">10 s</option>
+          </select>
+          <button class="btn-sm" id="dualQuietBtn" onclick="dualRunStep(1)"
+            style="font-size:.8em;">🎙 Measure</button>
+        </div>
+        <div id="dualQuietStatus" style="color:#aaa;font-size:.78em;min-height:1.4em;"></div>
+      </div>
+
+      <!-- Step 2: Voice reference -->
+      <div style="background:#0a1520;border:1px solid #1a2a3e;border-radius:6px;
+                  padding:10px 12px;margin-bottom:10px;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
+          <span style="font-weight:bold;color:#7ec8e3;">Step 2 — Indoor voice at 1 m</span>
+          <span id="dualStep2Badge" style="font-size:.75em;padding:2px 8px;border-radius:8px;
+                background:#2a2a3e;color:#666;">not done</span>
+        </div>
+        <p style="color:#aaa;margin-bottom:6px;">
+          Place phone 1 m from speaker. Speak at a steady, conversational pace
+          (read a paragraph aloud — avoid projecting or whispering).
+          Typical level: <strong>60 dBSPL</strong>.
+          A standard living room or office is ideal; avoid bathrooms or closets.
+        </p>
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
+          <label style="color:#aaa;font-size:.82em;">Reference:</label>
+          <input type="number" id="dualVoiceTarget" value="60" min="50" max="75"
+            style="width:56px;background:#1a2a4e;color:#e0e0e0;border:1px solid #2a3a5e;
+                   border-radius:4px;padding:3px 7px;font-size:.9em;text-align:center;">
+          <span style="font-size:.82em;">dBSPL &nbsp;·&nbsp; duration:</span>
+          <select id="dualVoiceSecs"
+            style="background:#1a2a4e;color:#e0e0e0;border:1px solid #2a3a5e;border-radius:4px;padding:3px 7px;font-size:.82em;">
+            <option value="3">3 s</option>
+            <option value="5" selected>5 s (recommended)</option>
+            <option value="10">10 s</option>
+          </select>
+          <button class="btn-sm" id="dualVoiceBtn" onclick="dualRunStep(2)"
+            style="font-size:.8em;">🎙 Measure</button>
+        </div>
+        <div id="dualVoiceStatus" style="color:#aaa;font-size:.78em;min-height:1.4em;"></div>
+      </div>
+
+      <!-- Combined result -->
+      <div id="dualResultBox" style="display:none;background:#0a1a0a;border:1px solid #2a4a2a;
+           border-radius:6px;padding:10px 12px;margin-bottom:10px;">
+        <div style="font-weight:bold;color:#2ecc71;margin-bottom:4px;">Combined result</div>
+        <div id="dualResultText" style="font-size:.82em;color:#e0e0e0;line-height:1.7;"></div>
+        <button class="btn-sm" id="dualApplyBtn" onclick="dualApplyResult()"
+          style="margin-top:8px;font-size:.82em;">✅ Apply this offset</button>
+      </div>
+
+      <p style="color:#555;font-size:.77em;line-height:1.5;">
+        <strong>Tips:</strong> Distance matters — every 2× distance = −6 dB.
+        Speak at a steady, monotone pace for the voice step.
+        If the two offsets differ by &gt;5 dB, AGC may be active or the room is unusual.
+      </p>
+    </div>
+
+    <!-- ── Quiet room only panel ── -->
+    <div id="calPanelQuiet" style="display:none;font-size:.85em;line-height:1.6;">
+      <p>Go to a quiet room. Typical ambient noise: <strong>30–35 dBSPL</strong>.</p>
+      <div style="display:flex;align-items:center;gap:8px;margin:8px 0;flex-wrap:wrap;">
+        <label style="color:#aaa;font-size:.82em;">Reference:</label>
+        <input type="number" id="calQuietTarget" value="35" min="20" max="50"
+          style="width:56px;background:#1a2a4e;color:#e0e0e0;border:1px solid #2a3a5e;
+                 border-radius:4px;padding:3px 7px;font-size:.9em;text-align:center;">
+        <span style="font-size:.82em;">dBSPL</span>
+      </div>
+      <button class="btn-sm" id="calQuietBtn" onclick="calRunCapture('quiet')"
+        style="margin-bottom:8px;font-size:.82em;">🎙 Measure 5 s</button>
+      <div id="calQuietStatus" style="color:#aaa;font-size:.78em;min-height:1.4em;"></div>
+    </div>
+
+    <!-- ── Voice only panel ── -->
+    <div id="calPanelVoice" style="display:none;font-size:.85em;line-height:1.6;">
+      <p>Place phone <strong>1 m</strong> from speaker, speak at a steady conversational pace.
+         Typical level: <strong>60 dBSPL</strong>.</p>
+      <div style="display:flex;align-items:center;gap:8px;margin:8px 0;flex-wrap:wrap;">
+        <label style="color:#aaa;font-size:.82em;">Reference:</label>
+        <input type="number" id="calVoiceTarget" value="60" min="50" max="75"
+          style="width:56px;background:#1a2a4e;color:#e0e0e0;border:1px solid #2a3a5e;
+                 border-radius:4px;padding:3px 7px;font-size:.9em;text-align:center;">
+        <span style="font-size:.82em;">dBSPL</span>
+      </div>
+      <button class="btn-sm" id="calVoiceBtn" onclick="calRunCapture('voice')"
+        style="margin-bottom:8px;font-size:.82em;">🎙 Measure 5 s</button>
+      <div id="calVoiceStatus" style="color:#aaa;font-size:.78em;min-height:1.4em;"></div>
+    </div>
+
+    <!-- ── Manual panel ── -->
+    <div id="calPanelManual" style="display:none;font-size:.85em;line-height:1.6;">
+      <p>Enter the calibration offset directly (dBFS + offset = dBSPL).</p>
+      <div style="display:flex;align-items:center;gap:10px;margin:8px 0;flex-wrap:wrap;">
+        <label style="color:#aaa;font-size:.82em;">Offset:</label>
+        <input type="number" id="calManualSlider" value="105" min="60" max="140" step="0.5"
+          style="width:72px;background:#1a2a4e;color:#e0e0e0;border:1px solid #2a3a5e;
+                 border-radius:4px;padding:3px 7px;font-size:.9em;text-align:center;"
+          oninput="calPreviewManual(this.value)">
+        <span style="font-size:.82em;">dB</span>
+      </div>
+      <input type="range" id="calManualRange" min="60" max="140" step="0.5" value="105"
+        style="width:100%;accent-color:#f5a623;margin:6px 0;"
+        oninput="calSyncSlider(this.value)">
+      <div style="display:flex;justify-content:space-between;font-size:.72em;color:#555;">
+        <span>+60 (quiet Android)</span><span>+105 (iPhone)</span><span>+140 (pro)</span>
+      </div>
+      <button class="btn-sm" onclick="calApplyManual()"
+        style="margin-top:10px;font-size:.82em;">✅ Apply</button>
+    </div>
+
+    <div style="margin-top:14px;padding-top:12px;border-top:1px solid #1a2a3e;">
+      <p style="font-size:.73em;color:#555;line-height:1.5;margin-bottom:10px;">
+        ⚠ Typical accuracy: ±3–5 dB. Smartphones clip above ~100–110 dB and may roll off below
+        ~100 Hz. Measurements are estimates; not a substitute for a calibrated SLM.
+        NoiseCapture traffic-reference method not included (requires GPS + OSM backend).
+      </p>
+      <div style="display:flex;justify-content:flex-end;">
+        <button class="btn-secondary btn-sm" onclick="hideModal('calModal')">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 </body>
 </html>

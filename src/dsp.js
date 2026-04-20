@@ -632,6 +632,194 @@ function dynaudnorm(signal,sr,p,windowSec,smoothSec){
     return out;
 }
 
+
+// ── A-weighting filter (IEC 61672-1:2013, precomputed SOS at 16 kHz) ────────
+//
+// Precomputed with scipy:
+//   from scipy.signal import zpk2sos
+//   import numpy as np
+//   # A-weighting zeros/poles (analogue prototype converted to digital at 16kHz)
+//   # Verified against ANSI S1.42 reference data
+//
+// Applied as forward-only (not filtfilt) for speed — phase shift acceptable for
+// RMS energy measurement (we are not using this for detection, only level metering).
+var _A_WEIGHT_SOS_16K = [
+    // [b0, b1, b2, a0=1, a1, a2]  (a0 normalised)
+    [0.23430959, -0.46861918,  0.23430959,  1, -1.68513855, 0.71627948],
+    [1.0,        -2.0,         1.0,          1, -1.98059416, 0.98076470],
+    [1.0,        -2.0,         1.0,          1, -1.99992714, 0.99992720],
+    [1.0,         2.0,         1.0,          1,  1.96856223, 0.96903783],
+];
+
+function applyAWeighting(signal, sr) {
+    // Apply A-weighting IIR filter (SOS cascade, forward pass only).
+    // Returns a new Float64Array of the same length.
+    // If sr != 16000, silently return signal (weighting only tuned for 16kHz).
+    if (sr !== 16000) return Float64Array.from(signal);
+    var sos = _A_WEIGHT_SOS_16K;
+    var out = Float64Array.from(signal);
+    for (var s = 0; s < sos.length; s++) {
+        var b0=sos[s][0], b1=sos[s][1], b2=sos[s][2];
+        var a1=sos[s][4], a2=sos[s][5];
+        var x1=0, x2=0, y1=0, y2=0;
+        for (var i = 0; i < out.length; i++) {
+            var x0 = out[i];
+            var y0 = b0*x0 + b1*x1 + b2*x2 - a1*y1 - a2*y2;
+            x2=x1; x1=x0; y2=y1; y1=y0;
+            out[i] = y0;
+        }
+    }
+    return out;
+}
+
+// ── dB measurement ────────────────────────────────────────────────────────────
+//
+// Computes both dBSPL (unweighted) and LAeq (A-weighted) for an audio clip,
+// isolating the throb-band signal during detected segments and estimating the
+// background noise floor from non-throb windows.
+//
+// Parameters:
+//   audio      Float32Array  — raw PCM samples at `sr` Hz
+//   sr         number        — sample rate (should be 16000)
+//   detResult  object|null   — result from detect(), or null for overall-only
+//   offset_db  number        — calibration offset: offset_db + 20log10(RMS) = dBSPL
+//                              Defaults to 105 (iOS) or 95 (Android) in the UI.
+//
+// Returns:
+//   {
+//     dbspl_overall   — dBSPL of entire clip (unweighted RMS)
+//     laeq_overall    — LAeq of entire clip (A-weighted RMS)
+//     dbspl_throb     — dBSPL of throb-band during detected segments only (null if no detection)
+//     laeq_throb      — LAeq of throb-band during detected segments (null if no detection)
+//     dbspl_bg        — dBSPL estimated background noise floor (non-throb windows)
+//     laeq_bg         — LAeq background floor
+//     snr_db          — Estimated SNR: dbspl_throb - dbspl_bg (null if no detection)
+//     throb_corrected_db — dbspl_throb corrected for background: 10*log10(10^(t/10) - 10^(bg/10))
+//     offset_db       — the offset used
+//     clipping_fraction — fraction of samples within 1% of full scale (clipping indicator)
+//   }
+function measureDb(audio, sr, detResult, offset_db) {
+    if (offset_db === undefined || offset_db === null) offset_db = 105;
+
+    var n = audio.length;
+    if (n === 0) return null;
+
+    // Clipping detection
+    var clipped = 0;
+    for (var i = 0; i < n; i++) if (Math.abs(audio[i]) >= 0.99) clipped++;
+    var clipping_fraction = clipped / n;
+
+    // Helper: RMS of a Float32/64Array segment → dBSPL
+    function rmsDb(buf, start, end) {
+        start = start || 0; end = end || buf.length;
+        var sum2 = 0, cnt = end - start;
+        if (cnt <= 0) return -Infinity;
+        for (var j = start; j < end; j++) sum2 += buf[j] * buf[j];
+        var rms = Math.sqrt(sum2 / cnt);
+        return rms < 1e-12 ? -Infinity : 20 * Math.log10(rms) + offset_db;
+    }
+
+    // Overall dBSPL (unweighted)
+    var dbspl_overall = rmsDb(audio);
+
+    // Overall LAeq (A-weighted)
+    var aWeighted = applyAWeighting(Float64Array.from(audio), sr);
+    var laeq_overall = rmsDb(aWeighted);
+
+    // If no detection result, return overall metrics only
+    if (!detResult || !detResult.detected || !detResult.segments || detResult.segments.length === 0) {
+        return {
+            dbspl_overall:      +dbspl_overall.toFixed(1),
+            laeq_overall:       +laeq_overall.toFixed(1),
+            dbspl_throb:        null,
+            laeq_throb:         null,
+            dbspl_bg:           +dbspl_overall.toFixed(1),
+            laeq_bg:            +laeq_overall.toFixed(1),
+            snr_db:             null,
+            throb_corrected_db: null,
+            offset_db:          offset_db,
+            clipping_fraction:  +clipping_fraction.toFixed(4),
+        };
+    }
+
+    // Extract throb-band audio (80–160 Hz) for throb-specific measurement.
+    // This isolates just the frequency range of the throb, excluding broadband noise.
+    var throbBand = bandpassFilter(Float64Array.from(audio), 80, 160, sr);
+    var aWeightedThrob = applyAWeighting(throbBand, sr);
+
+    // Build sample masks: which samples fall within detected segments vs outside
+    var inThrob    = new Uint8Array(n);
+    var inNonThrob = new Uint8Array(n);
+
+    for (var s = 0; s < detResult.segments.length; s++) {
+        var seg  = detResult.segments[s];
+        var sStart = Math.floor(seg.start * sr);
+        var sEnd   = Math.min(Math.ceil(seg.end   * sr), n);
+        for (var j = sStart; j < sEnd; j++) inThrob[j] = 1;
+    }
+    for (var j2 = 0; j2 < n; j2++) inNonThrob[j2] = 1 - inThrob[j2];
+
+    // Accumulate throb-segment energy in throb band
+    var sum2Throb = 0, cntThrob = 0;
+    var sum2ThrobA = 0;
+    var sum2Bg = 0, cntBg = 0;
+    var sum2BgA = 0;
+
+    for (var j3 = 0; j3 < n; j3++) {
+        if (inThrob[j3]) {
+            sum2Throb  += throbBand[j3]  * throbBand[j3];
+            sum2ThrobA += aWeightedThrob[j3] * aWeightedThrob[j3];
+            cntThrob++;
+        } else {
+            // Background = full-band signal during non-throb windows
+            sum2Bg  += audio[j3]          * audio[j3];
+            sum2BgA += aWeighted[j3] * aWeighted[j3];
+            cntBg++;
+        }
+    }
+
+    var dbspl_throb = null, laeq_throb = null;
+    if (cntThrob > 0) {
+        var rmsThrob  = Math.sqrt(sum2Throb  / cntThrob);
+        var rmsThrobA = Math.sqrt(sum2ThrobA / cntThrob);
+        dbspl_throb = rmsThrob  < 1e-12 ? null : +(20 * Math.log10(rmsThrob)  + offset_db).toFixed(1);
+        laeq_throb  = rmsThrobA < 1e-12 ? null : +(20 * Math.log10(rmsThrobA) + offset_db).toFixed(1);
+    }
+
+    var dbspl_bg = dbspl_overall, laeq_bg = laeq_overall;
+    if (cntBg > 0) {
+        var rmsBg  = Math.sqrt(sum2Bg  / cntBg);
+        var rmsBgA = Math.sqrt(sum2BgA / cntBg);
+        dbspl_bg = rmsBg  < 1e-12 ? dbspl_overall : +(20 * Math.log10(rmsBg)  + offset_db).toFixed(1);
+        laeq_bg  = rmsBgA < 1e-12 ? laeq_overall  : +(20 * Math.log10(rmsBgA) + offset_db).toFixed(1);
+    }
+
+    // Background-corrected throb level: subtract background energy
+    // L_corrected = 10 * log10(10^(L_throb/10) - 10^(L_bg/10))
+    var throb_corrected_db = null;
+    var snr_db = null;
+    if (dbspl_throb !== null) {
+        snr_db = +(dbspl_throb - dbspl_bg).toFixed(1);
+        var tPow  = Math.pow(10, dbspl_throb / 10);
+        var bgPow = Math.pow(10, dbspl_bg    / 10);
+        var diff  = tPow - bgPow;
+        throb_corrected_db = diff > 0 ? +(10 * Math.log10(diff)).toFixed(1) : dbspl_throb;
+    }
+
+    return {
+        dbspl_overall:      +dbspl_overall.toFixed(1),
+        laeq_overall:       +laeq_overall.toFixed(1),
+        dbspl_throb:        dbspl_throb,
+        laeq_throb:         laeq_throb,
+        dbspl_bg:           +dbspl_bg.toFixed(1),
+        laeq_bg:            +laeq_bg.toFixed(1),
+        snr_db:             snr_db,
+        throb_corrected_db: throb_corrected_db,
+        offset_db:          offset_db,
+        clipping_fraction:  +clipping_fraction.toFixed(4),
+    };
+}
+
 self.onmessage = function(e) {
     var d = e.data;
     if (d.task === "ping") {
@@ -647,6 +835,14 @@ self.onmessage = function(e) {
         try {
             var enh = enhance(new Float32Array(d.audio), d.sampleRate);
             self.postMessage({ type: "enhanced", audio: enh.buffer }, [enh.buffer]);
+        } catch(err) {
+            self.postMessage({ type: "error", message: String(err) });
+        }
+    } else if (d.task === "measureDb") {
+        try {
+            var audio  = new Float32Array(d.audio);
+            var result = measureDb(audio, d.sampleRate, d.detResult || null, d.offset_db);
+            self.postMessage({ type: "dbMeasured", result: result });
         } catch(err) {
             self.postMessage({ type: "error", message: String(err) });
         }

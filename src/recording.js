@@ -258,6 +258,19 @@ async function saveAudioSnap(m, reason) {
             console.warn("viz compute failed (non-fatal):", vizErr);
         }
 
+        // Measure dB levels (throb-specific, background-corrected)
+        var dbResult = null;
+        try {
+            var calOffset = calGetOffset();
+            var dbDetResult = null;
+            try {
+                dbDetResult = await runDetectInWorker(snapArr);
+            } catch(e) {}
+            dbResult = measureDb(snapArr, SR, dbDetResult, calOffset);
+        } catch(dbErr) {
+            console.warn("dB measurement failed (non-fatal):", dbErr);
+        }
+
         var eventRec = {
             session_id:            sessionId,
             wall_clock_iso:        m.wallClockIso,
@@ -284,6 +297,16 @@ async function saveAudioSnap(m, reason) {
             live_ctx_masked:       m.liveCtxMasked||0,
             live_throb_detected:   m.liveDetected||false,
             audio_saved:           saveAudio,
+            // dB measurements (throb-specific, background-corrected)
+            dbspl_throb:           dbResult ? dbResult.dbspl_throb        : null,
+            laeq_throb:            dbResult ? dbResult.laeq_throb         : null,
+            dbspl_overall:         dbResult ? dbResult.dbspl_overall      : null,
+            laeq_overall:          dbResult ? dbResult.laeq_overall       : null,
+            dbspl_bg:              dbResult ? dbResult.dbspl_bg           : null,
+            snr_db:                dbResult ? dbResult.snr_db             : null,
+            throb_corrected_db:    dbResult ? dbResult.throb_corrected_db : null,
+            clipping_fraction:     dbResult ? dbResult.clipping_fraction  : null,
+            cal_offset_db:         calGetOffset(),
         };
         var savedEventId = await idbAdd("events", eventRec);
         if($("panelRec").classList.contains("active")){
@@ -539,6 +562,7 @@ async function loadEventLog() {
                 +"<td>"+conf+"</td>"
                 +"<td>"+maskBadge+"</td>"
                 +"<td>"+dur+"</td>"
+                +(ev.dbspl_throb!==null&&ev.dbspl_throb!==undefined?"<td style='color:#7ec8e3;font-variant-numeric:tabular-nums;'>"+ev.dbspl_throb.toFixed(1)+"<br><span style='font-size:.75em;color:#aaa;'>"+((ev.laeq_throb!==null&&ev.laeq_throb!==undefined)?ev.laeq_throb.toFixed(1)+" dBA":"")+(ev.snr_db!==null&&ev.snr_db!==undefined?" / SNR "+ev.snr_db.toFixed(1):"")+"</span></td>":"<td style='color:#555;'>—</td>")
                 +"<td style='white-space:nowrap;'>"
                   +"<button class='btn-secondary btn-sm' onclick='openEnhanceModal("+ev.id+")'>▶ Play</button> "
                   +"<button class='btn-secondary btn-sm' onclick='openVizModal("+ev.id+")' title='View visualization'>📊</button> "
@@ -925,4 +949,299 @@ async function updateStorageBar() {
     var usedMB=(est.usage/1024/1024).toFixed(1);
     var quotaMB=(est.quota/1024/1024).toFixed(0);
     $("storageLabel").textContent="Storage: "+usedMB+" MB used of "+quotaMB+" MB quota ("+pct.toFixed(1)+"%)";
+}
+
+// ── Calibration Modal ─────────────────────────────────────────────────────────
+//
+// Supports five methods:
+//   default  — platform-based offset (iOS 105, Android 95, NIOSH/ASA research)
+//   dual     — two-point: quiet room + indoor voice, averaged (recommended)
+//   quiet    — quiet room only (single-point)
+//   voice    — indoor voice at 1m only (single-point)
+//   manual   — direct offset entry
+//
+// Two-point math:
+//   For each measurement: offset_i = target_i_dBSPL − measured_dBFS_i
+//   Final offset = mean(offset_1, offset_2) when both steps complete.
+//   If only one step done, use that step's offset.
+//   If the two offsets diverge by >5 dB, display a warning (AGC or room issue).
+
+window.openCalModal = function() {
+    calRefreshDisplay();
+    calSelectTab(calGetMethod() === 'default' ? 'default' :
+                 calGetMethod() === 'dual'    ? 'dual'    :
+                 calGetMethod());
+    showModal('calModal');
+    calLiveStart();
+};
+
+// ── Persistent offset helpers (in utils.js: calGetOffset/calSetOffset) ────────
+
+function calRefreshDisplay() {
+    var offset = calGetOffset();
+    var method = calGetMethod();
+    var el = $('calOffsetDisplay');
+    if (el) el.textContent = (offset >= 0 ? '+' : '') + offset.toFixed(1) + ' dB';
+    var mel = $('calMethodDisplay');
+    if (mel) {
+        var labels = {
+            default: 'Platform default',
+            dual:    'Two-point (quiet + voice)',
+            quiet:   'Quiet room only',
+            voice:   'Indoor voice only',
+            manual:  'Manual',
+        };
+        mel.textContent = labels[method] || method;
+    }
+    if ($('calManualSlider')) $('calManualSlider').value = offset.toFixed(1);
+    if ($('calManualRange'))  $('calManualRange').value  = offset.toFixed(1);
+}
+
+// ── Tab switching ─────────────────────────────────────────────────────────────
+
+window.calSelectTab = function(tab) {
+    ['Default','Dual','Quiet','Voice','Manual'].forEach(function(p) {
+        var panel = $('calPanel' + p);
+        var btn   = $('calTab'   + p);
+        if (!panel || !btn) return;
+        var active = p.toLowerCase() === tab;
+        panel.style.display = active ? '' : 'none';
+        btn.className = active ? 'btn-sm' : 'btn-sm btn-secondary';
+    });
+};
+
+// ── Platform default ──────────────────────────────────────────────────────────
+
+window.calApplyDefault = function(type) {
+    var offset = type === 'ios' ? 105 : type === 'android' ? 95 : calDefaultOffset();
+    calSetOffset(offset);
+    calSetMethod('default');
+    calRefreshDisplay();
+    statusRec('success', '✅ Calibration: +' + offset.toFixed(1) + ' dB (' + type + ' default)');
+};
+
+// ── Audio capture helper ──────────────────────────────────────────────────────
+// Captures `secs` seconds of microphone audio with all processing disabled.
+// Returns a Float32Array of PCM samples.
+
+function calCapture(secs, onProgress) {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia)
+        return Promise.reject(new Error('Microphone not available'));
+
+    return navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+    }).then(function(stream) {
+        var ctx    = new (window.AudioContext || window.webkitAudioContext)();
+        var src    = ctx.createMediaStreamSource(stream);
+        var bufSize = 4096;
+        var proc   = ctx.createScriptProcessor(bufSize, 1, 1);
+        var chunks = [];
+        var startMs = Date.now();
+
+        return new Promise(function(resolve, reject) {
+            proc.onaudioprocess = function(e) {
+                var buf = e.inputBuffer.getChannelData(0);
+                chunks.push(new Float32Array(buf));
+                var elapsed = (Date.now() - startMs) / 1000;
+                if (onProgress) onProgress(Math.min(elapsed / secs, 1.0));
+                if (elapsed >= secs) {
+                    proc.disconnect(); src.disconnect();
+                    stream.getTracks().forEach(function(t) { t.stop(); });
+                    ctx.close();
+                    // Concatenate
+                    var total = chunks.reduce(function(s,c) { return s+c.length; }, 0);
+                    var out   = new Float32Array(total);
+                    var off2  = 0;
+                    chunks.forEach(function(c) { out.set(c, off2); off2 += c.length; });
+                    resolve(out);
+                }
+            };
+            src.connect(proc);
+            proc.connect(ctx.destination);
+        });
+    });
+}
+
+// Compute dBFS from a Float32Array (RMS, unweighted)
+function calRmsDbfs(samples) {
+    var sum2 = 0;
+    for (var i = 0; i < samples.length; i++) sum2 += samples[i] * samples[i];
+    var rms = Math.sqrt(sum2 / Math.max(samples.length, 1));
+    return rms < 1e-12 ? -96 : 20 * Math.log10(rms);
+}
+
+// ── Two-point calibration state ───────────────────────────────────────────────
+
+var _dualOffsets = { step1: null, step2: null };  // null = not yet measured
+
+function dualUpdateResult() {
+    var o1  = _dualOffsets.step1;
+    var o2  = _dualOffsets.step2;
+    var box = $('dualResultBox');
+    var txt = $('dualResultText');
+    if (!box || !txt) return;
+
+    var lines = [];
+    if (o1 !== null) lines.push('Quiet room:&nbsp; <strong>' + (o1 >= 0?'+':'') + o1.toFixed(1) + ' dB</strong>');
+    if (o2 !== null) lines.push('Indoor voice:&nbsp; <strong>' + (o2 >= 0?'+':'') + o2.toFixed(1) + ' dB</strong>');
+
+    if (o1 !== null && o2 !== null) {
+        var avg  = (o1 + o2) / 2;
+        var diff = Math.abs(o1 - o2);
+        lines.push('Average: <strong style="color:#f5a623;">' + (avg >= 0?'+':'') + avg.toFixed(1) + ' dB</strong>');
+        if (diff > 5) {
+            lines.push('<span style="color:#e74c3c;">⚠ Steps differ by ' + diff.toFixed(1) +
+                ' dB (>5 dB). AGC may be active, or room acoustics are unusual. ' +
+                'Consider retrying in a different environment.</span>');
+        } else {
+            lines.push('<span style="color:#2ecc71;">✓ Steps agree within ' + diff.toFixed(1) + ' dB — good calibration.</span>');
+        }
+    } else if (o1 !== null || o2 !== null) {
+        var single = o1 !== null ? o1 : o2;
+        lines.push('Single-point offset: <strong style="color:#f5a623;">' +
+            (single >= 0?'+':'') + single.toFixed(1) + ' dB</strong>');
+        lines.push('<span style="color:#aaa;">(Complete both steps for better accuracy.)</span>');
+    }
+
+    if (lines.length > 0) {
+        box.style.display = '';
+        txt.innerHTML = lines.join('<br>');
+    } else {
+        box.style.display = 'none';
+    }
+}
+
+window.dualRunStep = function(step) {
+    var isQuiet  = step === 1;
+    var targetEl = isQuiet ? $('dualQuietTarget') : $('dualVoiceTarget');
+    var secsEl   = isQuiet ? $('dualQuietSecs')   : $('dualVoiceSecs');
+    var statusEl = isQuiet ? $('dualQuietStatus') : $('dualVoiceStatus');
+    var badgeEl  = isQuiet ? $('dualStep1Badge')  : $('dualStep2Badge');
+    var btnEl    = isQuiet ? $('dualQuietBtn')    : $('dualVoiceBtn');
+    var dfltDb   = isQuiet ? 35 : 60;
+
+    var targetDb = targetEl ? (parseFloat(targetEl.value) || dfltDb) : dfltDb;
+    var secs     = secsEl   ? (parseInt(secsEl.value)     || 5)      : 5;
+
+    if (statusEl) statusEl.textContent = '🎙 Starting measurement…';
+    if (btnEl)    btnEl.disabled = true;
+    if (badgeEl)  { badgeEl.textContent = 'measuring…'; badgeEl.style.background='rgba(245,166,35,.2)'; badgeEl.style.color='#f5a623'; }
+
+    calCapture(secs, function(frac) {
+        if (statusEl) statusEl.textContent = '🎙 ' + Math.round(frac * 100) + '% captured…';
+    }).then(function(samples) {
+        var dbfs   = calRmsDbfs(samples);
+        var offset = targetDb - dbfs;
+        offset = Math.max(60, Math.min(140, offset));
+        _dualOffsets[isQuiet ? 'step1' : 'step2'] = offset;
+
+        if (statusEl) statusEl.textContent =
+            '✅ Measured dBFS=' + dbfs.toFixed(1) + '  →  offset=' +
+            (offset >= 0?'+':'') + offset.toFixed(1) + ' dB';
+        if (badgeEl) {
+            badgeEl.textContent = '✓ done';
+            badgeEl.style.background = 'rgba(46,204,113,.2)';
+            badgeEl.style.color = '#2ecc71';
+        }
+        if (btnEl) btnEl.disabled = false;
+        dualUpdateResult();
+    }).catch(function(e) {
+        if (statusEl) statusEl.textContent = '❌ ' + e.message;
+        if (badgeEl)  { badgeEl.textContent = 'error'; badgeEl.style.color='#e74c3c'; }
+        if (btnEl)    btnEl.disabled = false;
+    });
+};
+
+window.dualApplyResult = function() {
+    var o1 = _dualOffsets.step1;
+    var o2 = _dualOffsets.step2;
+    var final;
+    if (o1 !== null && o2 !== null)  final = (o1 + o2) / 2;
+    else if (o1 !== null)            final = o1;
+    else if (o2 !== null)            final = o2;
+    else                             return;
+    final = Math.max(60, Math.min(140, final));
+    calSetOffset(final);
+    calSetMethod('dual');
+    calRefreshDisplay();
+    var steps = (o1 !== null && o2 !== null) ? 'two-point average' : 'single-point';
+    statusRec('success', '✅ Two-point calibration applied: +' + final.toFixed(1) + ' dB (' + steps + ')');
+    hideModal('calModal');
+};
+
+// ── Single-step capture (quiet / voice tabs) ──────────────────────────────────
+
+window.calRunCapture = function(mode) {
+    var targetEl = mode === 'quiet' ? $('calQuietTarget') : $('calVoiceTarget');
+    var statusEl = mode === 'quiet' ? $('calQuietStatus') : $('calVoiceStatus');
+    var btnEl    = mode === 'quiet' ? $('calQuietBtn')    : $('calVoiceBtn');
+    var dfltDb   = mode === 'quiet' ? 35 : 60;
+    var targetDb = targetEl ? (parseFloat(targetEl.value) || dfltDb) : dfltDb;
+    var secs     = 5;
+
+    if (statusEl) statusEl.textContent = '🎙 Recording ' + secs + 's…';
+    if (btnEl)    btnEl.disabled = true;
+
+    calCapture(secs, function(frac) {
+        if (statusEl) statusEl.textContent = '🎙 ' + Math.round(frac * 100) + '% captured…';
+    }).then(function(samples) {
+        var dbfs   = calRmsDbfs(samples);
+        var offset = Math.max(60, Math.min(140, targetDb - dbfs));
+        calSetOffset(offset);
+        calSetMethod(mode);
+        calRefreshDisplay();
+        if (statusEl) statusEl.textContent =
+            '✅ Offset: +' + offset.toFixed(1) + ' dB  (dBFS=' + dbfs.toFixed(1) + ')';
+        statusRec('success', '✅ Calibration offset: +' + offset.toFixed(1) + ' dB (' + mode + ')');
+        if (btnEl) btnEl.disabled = false;
+    }).catch(function(e) {
+        if (statusEl) statusEl.textContent = '❌ ' + e.message;
+        if (btnEl)    btnEl.disabled = false;
+    });
+};
+
+// ── Manual tab ────────────────────────────────────────────────────────────────
+
+window.calPreviewManual = function(v) {
+    if ($('calManualRange'))  $('calManualRange').value = v;
+    var el = $('calOffsetDisplay');
+    if (el) el.textContent = (+v >= 0 ? '+' : '') + (+v).toFixed(1) + ' dB';
+};
+
+window.calSyncSlider = function(v) {
+    if ($('calManualSlider')) $('calManualSlider').value = v;
+    var el = $('calOffsetDisplay');
+    if (el) el.textContent = (+v >= 0 ? '+' : '') + (+v).toFixed(1) + ' dB';
+};
+
+window.calApplyManual = function() {
+    var v = parseFloat(($('calManualSlider') || {}).value || '105');
+    calSetOffset(v);
+    calSetMethod('manual');
+    calRefreshDisplay();
+    statusRec('success', '✅ Manual calibration offset: +' + v.toFixed(1) + ' dB');
+    hideModal('calModal');
+};
+
+// ── Live level display in modal ───────────────────────────────────────────────
+// Uses the existing worklet ring buffer (only active when recording is running).
+
+var _calLiveTimer = null;
+
+function calLiveStart() {
+    clearInterval(_calLiveTimer);
+    _calLiveTimer = setInterval(function() {
+        var modal = $('calModal');
+        if (!modal || !modal.classList.contains('active')) {
+            clearInterval(_calLiveTimer); return;
+        }
+        var el = $('calLiveReading');
+        if (!el) return;
+        // If recording is active we have a live RMS in _lastTelemetry
+        if (typeof workletNode !== 'undefined' && workletNode) {
+            el.textContent = '(live monitoring active — see Live Signal panel)';
+        } else {
+            el.textContent = '— (start recording for live reading)';
+        }
+    }, 1000);
 }
