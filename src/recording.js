@@ -597,15 +597,22 @@ async function loadEventLog() {
             try {
                 var devices = await navigator.mediaDevices.enumerateDevices();
                 var audioOutputs = devices.filter(function(d) { return d.kind === 'audiooutput'; });
-                // Heuristic: check if any device label suggests external audio
-                // (headphones, Bluetooth, USB, etc. vs built-in speakers)
+                
+                // Heuristic 1: If we have multiple audio output devices, assume at least one is external
+                // Heuristic 2: Check if any device label suggests external audio
+                // (headphones, Bluetooth, USB, AirPods, etc. vs built-in speakers)
+                var hasMultipleOutputs = audioOutputs.length > 1;
                 var hasExternalAudio = audioOutputs.some(function(d) { 
                     var label = (d.label || '').toLowerCase();
-                    return label.includes('headphone') || label.includes('bluetooth') || 
-                           label.includes('usb') || label.includes('external');
+                    // Common patterns for external audio across platforms
+                    return label.includes('headphone') || label.includes('headset') ||
+                           label.includes('bluetooth') || label.includes('airpod') ||
+                           label.includes('usb') || label.includes('external') ||
+                           label.includes('line out') || label.includes('hdmi');
                 });
                 // Disable playback if recording and no external audio detected
-                shouldDisablePlayback = !hasExternalAudio;
+                // Conservative: if we have multiple outputs OR detected external device, allow playback
+                shouldDisablePlayback = !hasMultipleOutputs && !hasExternalAudio;
             } catch(e) {
                 // Can't detect devices, play it safe and allow playback
                 shouldDisablePlayback = false;
