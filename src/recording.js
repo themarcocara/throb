@@ -358,13 +358,26 @@ function runDetectInWorker(samples) {
 }
 
 // ── Visual feedback toggle ───────────────────────────────────────────────────
+// Restore saved preference on load
+(function(){
+    try {
+        var saved = localStorage.getItem('throb_visual_feedback');
+        if (saved !== null) {
+            var enabled = saved === 'true';
+            $("visualFeedbackToggle").checked = enabled;
+            $("visualFeedbackContent").style.display = enabled ? "" : "none";
+        }
+    } catch(e) { /* localStorage not available */ }
+})();
+
 $("visualFeedbackToggle").addEventListener("change", function(){
     var content = $("visualFeedbackContent");
-    if (this.checked) {
-        content.style.display = "";
-    } else {
-        content.style.display = "none";
-    }
+    var enabled = this.checked;
+    content.style.display = enabled ? "" : "none";
+    // Persist preference
+    try {
+        localStorage.setItem('throb_visual_feedback', String(enabled));
+    } catch(e) { /* localStorage not available */ }
 });
 
 // ── Mini confidence canvas ───────────────────────────────────────────────────
@@ -577,18 +590,21 @@ async function loadEventLog() {
         var shouldDisablePlayback = false;
         
         // Try to detect audio output device (only supported in some browsers)
+        // Note: Device detection relies on MediaDevices API and device label heuristics
+        // which may vary across browsers/platforms. Labels may be empty or use different
+        // naming conventions depending on browser permissions and OS.
         if (isRecording && navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
             try {
                 var devices = await navigator.mediaDevices.enumerateDevices();
                 var audioOutputs = devices.filter(function(d) { return d.kind === 'audiooutput'; });
-                // If we can detect devices and there's only the default/built-in speaker, disable playback
-                // This is a heuristic - if label contains "built-in" or "speaker" or we only have one device
+                // Heuristic: check if any device label suggests external audio
+                // (headphones, Bluetooth, USB, etc. vs built-in speakers)
                 var hasExternalAudio = audioOutputs.some(function(d) { 
                     var label = (d.label || '').toLowerCase();
                     return label.includes('headphone') || label.includes('bluetooth') || 
                            label.includes('usb') || label.includes('external');
                 });
-                // Disable if recording and no external audio detected
+                // Disable playback if recording and no external audio detected
                 shouldDisablePlayback = !hasExternalAudio;
             } catch(e) {
                 // Can't detect devices, play it safe and allow playback
