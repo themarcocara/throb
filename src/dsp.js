@@ -536,11 +536,25 @@ function detect(audio, sr, params) {
     var bestG=0,bestLagG=lagMinG;
     for(var lag=lagMinG;lag<=lagMaxG;lag++) if(corrFull[lag]>bestG){bestG=corrFull[lag];bestLagG=lag;}
 
-    // Segments from consecutive high-confidence windows
+    // Segments: only include runs of ≥minConf consecutive above-threshold windows.
+    // Previously this included ANY above-threshold window, producing false-positive
+    // segment markers even when detected=false — isolated windows that never formed
+    // a qualifying run were still rendered as segments in the UI.
     var halfHop=hopSec/2, raw=[];
-    for(var i=0;i<times.length;i++){
-        if(confidences[i]>=threshold)
-            raw.push({start:Math.max(0,times[i]-halfHop),end:Math.min(duration,times[i]+halfHop),bpm:bpms[i]});
+    var runStart=-1, runLen=0;
+    for(var i=0;i<=times.length;i++){
+        var pass=(i<times.length && confidences[i]>=threshold);
+        if(pass){
+            if(runLen===0) runStart=i;
+            runLen++;
+        } else {
+            if(runLen>=minConf){
+                for(var rj=runStart;rj<runStart+runLen;rj++){
+                    raw.push({start:Math.max(0,times[rj]-halfHop),end:Math.min(duration,times[rj]+halfHop),bpm:bpms[rj]});
+                }
+            }
+            runLen=0; runStart=-1;
+        }
     }
     var merged=[];
     for(var i=0;i<raw.length;i++){

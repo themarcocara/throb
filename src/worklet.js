@@ -40,7 +40,7 @@ const RING_LEN    = SR * RING_SECS;
 const HOP_SAMPS   = SR * 0.5;  // run detect every 500ms
 const WIN_SAMPS   = SR * 2.0;  // 2s analysis window — captures 3+ cycles at 100BPM
 const CONF_THRESH = 0.40;
-const CONF_MIN    = 3;         // consecutive windows to confirm
+const CONF_MIN    = 4;         // consecutive windows to confirm — must match dsp.js minConf default
 // Detection event capture
 const DET_PRE_SECS  = 15;     // audio before detection point
 const DET_POST_SECS = 10;     // audio after detection point
@@ -81,8 +81,15 @@ class ThrobProcessor extends AudioWorkletProcessor {
             const d = e.data;
             if (d.type === 'init') {
                 try {
+                    // Strip the Worker self.onmessage handler that dsp.js appends for
+                    // Web Worker mode — it must not run here because it would overwrite
+                    // this.port.onmessage and swallow all subsequent messages (snapNow,
+                    // setPeriodicSave, etc.), silently breaking live detection.
+                    // We cut everything from "self.onmessage" to end-of-file.
+                    var cutAt = d.dspCode.lastIndexOf('self.onmessage');
+                    var safeCode = cutAt >= 0 ? d.dspCode.slice(0, cutAt) : d.dspCode;
                     // eslint-disable-next-line no-new-func
-                    new Function(d.dspCode)();
+                    new Function(safeCode)();
                     this._dspReady = true;
                     this.port.postMessage({ type: 'ready' });
                 } catch(err) {
@@ -148,6 +155,20 @@ class ThrobProcessor extends AudioWorkletProcessor {
         if (this._hopAcc >= HOP_SAMPS && this._samplesIn >= WIN_SAMPS) {
             this._hopAcc = 0;
             this._runDetect();
+        } else if (this._hopAcc >= HOP_SAMPS && this._samplesIn < WIN_SAMPS) {
+            // Ring is filling but not yet full enough for detection.
+            // Send a lightweight heartbeat so the main thread can update the
+            // "Save 10s Now" button state as soon as ≥0.5s is available.
+            this._hopAcc = 0;
+            this.port.postMessage({
+                type: 'telemetry',
+                confidence: 0, strength: 0, masking_factor: 0,
+                context_masked: 0, bpm: 0,
+                state: this._state,
+                wallMs: Date.now(),
+                periodicAcc: 0, periodicInterval: this._periodicInterval / SR,
+                bufferedSecs: this._samplesIn / SR,
+            });
         }
 
         // Detection post-window countdown (CONFIRMED state)
