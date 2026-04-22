@@ -81,15 +81,30 @@ class ThrobProcessor extends AudioWorkletProcessor {
             const d = e.data;
             if (d.type === 'init') {
                 try {
-                    // Strip the Worker self.onmessage handler that dsp.js appends for
-                    // Web Worker mode — it must not run here because it would overwrite
-                    // this.port.onmessage and swallow all subsequent messages (snapNow,
-                    // setPeriodicSave, etc.), silently breaking live detection.
-                    // We cut everything from "self.onmessage" to end-of-file.
-                    var cutAt = d.dspCode.lastIndexOf('self.onmessage');
-                    var safeCode = cutAt >= 0 ? d.dspCode.slice(0, cutAt) : d.dspCode;
+                    // dsp.js ends with `self.onmessage = function(e){...}` for Web Worker
+                    // mode. Running it via new Function() in an AudioWorklet would normally
+                    // clobber this.port.onmessage. We prevent that by:
+                    //   1. Saving the current port handler.
+                    //   2. Running the full dsp.js (so all DSP functions are defined inside
+                    //      the new Function scope AND the self.onmessage closure captures them).
+                    //   3. Extracting the functions we need onto self.* from that closure.
+                    //   4. Restoring the saved handler.
+                    //
+                    // We extract by temporarily letting self.onmessage be set, then pulling
+                    // detect/enhance/measureDb out of it via a ping-style introspection, but
+                    // that is fragile. Instead, the simplest approach: append explicit self.*
+                    // assignments after the dspCode so the functions escape the new Function
+                    // scope, then restore the handler.
+                    var savedHandler = this.port.onmessage;
+                    // Append assignments that hoist DSP functions onto self
+                    var exportCode = d.dspCode +
+                        '\nself._dsp_detect=detect;' +
+                        '\nself._dsp_enhance=enhance;' +
+                        '\nself._dsp_measureDb=measureDb;';
                     // eslint-disable-next-line no-new-func
-                    new Function(safeCode)();
+                    new Function(exportCode)();
+                    // Restore worklet handler (dsp.js's self.onmessage clobbered it)
+                    this.port.onmessage = savedHandler;
                     this._dspReady = true;
                     this.port.postMessage({ type: 'ready' });
                 } catch(err) {
@@ -285,7 +300,7 @@ class ThrobProcessor extends AudioWorkletProcessor {
             const win  = this._getWindow();
             // windowSec matches WIN_SAMPS/SR so detect() sees the same window;
             // rhythmMin/Max match the tuned defaults for the new samples.
-            const r    = detect(win, SR, {
+            const r    = self._dsp_detect(win, SR, {
                 windowSec: WIN_SAMPS / SR,
                 hopSec: 0.5, minConf: 1,
                 rhythmMin: 0.3, rhythmMax: 3.5,
