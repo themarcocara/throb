@@ -117,7 +117,10 @@ async function startRecording() {
         heartbeatInterval=setInterval(writeHeartbeat,30000);
 
         $("stopRecBtn").disabled=false;
-        $("snapNowBtn").disabled=false;
+        // snapNowBtn stays disabled until the worklet reports bufferedSecs ≥ 0.5
+        // (telemetry handler below enables it). Enabling it here would let the user
+        // fire a snap before any audio is in the ring, producing a 0ms snap error.
+        $("snapNowBtn").disabled=true;
         statusRec("success","✅ Recording active. Monitoring for throb sound…");
 
     } catch(e) {
@@ -169,8 +172,11 @@ function onWorkletMessage(e) {
         if($("periodicToggle").checked){
             updatePeriodicLabel(true, m.periodicAcc||0);
         }
-        // Enable Save 10s Now only once ring has ≥0.5s buffered
-        // (the hard minimum for detect+spectrogram to work)
+        // Enable/disable "Save 10s Now" based on how much audio is in the ring.
+        // ≥0.5s is the hard minimum for detect()+spectrogram to function; below that
+        // saveAudioSnap() would discard the snap with a "too short" warning.
+        // We manage the button state entirely here — not at recording start — so there
+        // is no window where the button is clickable before audio is available.
         if(m.bufferedSecs !== undefined) {
             var snapBtn = $("snapNowBtn");
             if(snapBtn) snapBtn.disabled = m.bufferedSecs < 0.5;
@@ -198,6 +204,9 @@ function onWorkletMessage(e) {
     }
     else if(m.type==="error"||m.type==="dspError"){
         statusRec("error","DSP error: "+m.message);
+    }
+    else if(m.type==="warning"){
+        statusRec("info","⚠ "+m.message);
     }
 }
 

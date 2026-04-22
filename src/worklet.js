@@ -89,8 +89,20 @@ class ThrobProcessor extends AudioWorkletProcessor {
                     this.port.postMessage({ type: 'error', message: String(err) });
                 }
             } else if (d.type === 'snapNow') {
-                // Immediate snapshot — most recent PERIODIC_SECS
-                this._sendSnap('manual', Date.now());
+                // Immediate snapshot — most recent PERIODIC_SECS.
+                // Guard: if the ring hasn't accumulated at least 0.5s yet, the snap
+                // would be too short for detect() to process. Post a warning instead
+                // of sending a 0-length buffer (which produces the "0ms" UI error).
+                if (this._samplesIn < Math.ceil(0.5 * SR)) {
+                    this.port.postMessage({
+                        type: 'warning',
+                        message: 'Snap skipped: only ' +
+                            (this._samplesIn / SR * 1000).toFixed(0) +
+                            'ms buffered. Wait at least 0.5s after starting recording.'
+                    });
+                } else {
+                    this._sendSnap('manual', Date.now());
+                }
             } else if (d.type === 'setPeriodicSave') {
                 this._periodicEnabled = d.enabled;
                 if (d.resetTimer) this._periodicAcc = 0;
