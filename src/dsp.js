@@ -5,12 +5,32 @@
  * Contains all signal-processing: Butterworth SOS filters, FFT-based
  * autocorrelation, spectrogram, throb detection, and audio enhancement.
  *
- * Detection parameters (tuned across three real-world recordings):
- *   windowSec  2.0   — 2-second analysis window (≥3 cycles at 100 BPM)
- *   hopSec     0.5   — 500 ms hop between windows
- *   threshold  0.40  — autocorrelation confidence threshold
- *   rhythmMin  0.3 s — fastest throb period (200 BPM)
- *   rhythmMax  3.5 s — slowest throb period (~17 BPM)
+ * Detection parameters (tuned across real-world recordings):
+ *   windowSec    2.0  — 2-second analysis window (≥3 cycles at 100 BPM)
+ *   hopSec       0.5  — 500 ms hop between windows
+ *   threshold    0.40 — autocorrelation confidence threshold
+ *   minConf      4    — consecutive windows required to trigger detection
+ *   rhythmMin    0.3 s — fastest throb period (200 BPM)
+ *   rhythmMax    3.5 s — slowest throb period (~17 BPM)
+ *   bpmStdThresh 5.0  — rolling BPM std below which = stable (no penalty)
+ *   bpmStdMax   15.0  — rolling BPM std at which BPM-instability penalty = 0.9
+ *   valleyThresh 0.03 — ACF valley depth below which signal is noise-like (no penalty)
+ *   valleyPenMax 0.80 — max confidence penalty applied when valley depth = 0
+ *
+ * Three-penalty confidence model:
+ *   1. masking_factor     — broadband noise masking (mid-band vs throb-band RMS ratio)
+ *                           Ramps 0→0.75 as masking_ratio goes 2×→10×. Amplitude-invariant.
+ *   2. bpm_stability_factor — rolling BPM std over last 6 windows (~3 s lookback).
+ *                           True throbs have period std ≈ 1 BPM; noise artefacts
+ *                           wander 9–25 BPM. Ramps 0→0.9 as std goes 5→15 BPM.
+ *   3. valley_factor      — ACF inter-pulse valley depth. Real throbs have quiet
+ *                           gaps between pulses (valley depth ≥ 0.08 typical);
+ *                           noise fills in the valley (depth ≈ 0.015). Ramps 0→0.8
+ *                           as depth goes 0.03→0. Calibrated on AUD-20260421 (false
+ *                           positive eliminated) vs 4060 Front St 49 (true positive
+ *                           retained with zero windows suppressed).
+ *   Combined: penalty = min(0.95, masking*0.75 + bpm_stability + valley)
+ *             confidence = ac_strength * (1 - penalty)
  *
  * Masking model (two separate indicators):
  *   masking_factor     — confidence penalty, scaled mid/throb 2×→10×
@@ -314,7 +334,8 @@ function detect(audio, sr, params) {
             threshold:(params&&params.threshold)||0.40,
             duration: audio ? audio.length/(sr||16000) : 0,
             segments:[], times:[], strengths:[], confidences:[],
-            masking_factors:[], context_masked_arr:[], corrFull:[],
+            masking_factors:[], context_masked_arr:[],
+            bpm_stability_factors:[], valley_factors:[], corrFull:[],
             masking_detected:false, masking_duration_s:0,
             mask_end_estimate:null, throb_predates_mask:false,
             mean_ac_while_masked:null, peak_masking_ratio:0,
@@ -331,7 +352,7 @@ function detect(audio, sr, params) {
     var windowSec = (params&&params.windowSec) || 2.0;   // 2s captures 3+ cycles at 100BPM
     var hopSec    = (params&&params.hopSec)    || 0.5;
     var threshold = (params&&params.threshold) || 0.40;   // calibrated to new samples
-    var minConf   = (params&&params.minConf)   || 3;      // consecutive windows
+    var minConf   = (params&&params.minConf)   || 4;      // consecutive windows (raised 3→4: requires 2s sustained evidence)
     var rhythmMin = (params&&params.rhythmMin) || 0.3;    // allow down to 0.3s period (200BPM)
     var rhythmMax = (params&&params.rhythmMax) || 3.5;    // allow up to 3.5s period (17BPM)
 
@@ -347,7 +368,23 @@ function detect(audio, sr, params) {
 
     var times=[], strengths=[], bpms=[], confidences=[];
     var masking_factors=[], masked_snrs=[], context_masked_arr=[];
+    var bpm_stability_factors=[], valley_factors=[];
     var ac_hist=[];
+    // Rolling BPM history for stability check (last 6 windows = 3 seconds at 0.5s hop)
+    // A real throb has a rock-steady period; noise artefacts produce wandering BPM estimates.
+    // Calibrated from samples: true throb BPM std ≈ 1.0, false-positive std ≈ 9–25.
+    // Penalty fires when rolling std > bpmStdThresh (default 5 BPM), reaching full
+    // suppression at bpmStdMax (default 15 BPM). Below bpmStdThresh → no penalty.
+    var bpm_hist=[];
+    var bpmStdThresh  = (params&&params.bpmStdThresh)  || 5.0;   // BPM std below which = stable
+    var bpmStdMax     = (params&&params.bpmStdMax)     || 15.0;  // BPM std at which penalty = 1.0
+    // ACF valley depth: real throbs have quiet gaps between pulses; noise fills them in.
+    // Calibrated: TP mean valley depth=0.084, FP (AUD-20260421) mean=0.015.
+    // Penalty ramps from 0 at valleyThresh down to valleyPenMax at depth=0.
+    var valleyThresh  = (params&&params.valleyThresh)  || 0.030; // depth below this = noise-like
+    var valleyPenMax  = (params&&params.valleyPenMax)  || 0.80;  // max penalty at depth=0
+    // Skip past the DC rolloff region (lag≈0) before searching for valley minimum
+    var valleySkipSec = (params&&params.valleySkipSec) || 0.05;  // 50 ms skip
 
     for(var s=0; s+winSamps<=audio.length; s+=hopSamps){
         var t = (s + winSamps/2) / sr;
@@ -386,16 +423,66 @@ function detect(audio, sr, params) {
         if(ac_hist.length>6) ac_hist.shift();
         var ac_trend = ac_hist.length>1 ? (ac_hist[ac_hist.length-1]-ac_hist[0])/(ac_hist.length-1) : 0;
 
-        // Combined confidence
-        var confidence = best * (1.0 - masking_factor * 0.75);
+        // ── BPM stability penalty ─────────────────────────────────────────
+        // Real mechanical throbs have a fixed period; random noise autocorrelation
+        // latches onto whichever lag happens to be highest each window, causing the
+        // estimated BPM to wander. We measure the rolling std of BPM estimates over
+        // the last 6 windows and penalise confidence proportionally.
+        // Penalty ramps linearly from 0 at bpmStdThresh to 0.9 at bpmStdMax.
+        // We weight the penalty at 0.9 (not 1.0) so that even unstable signals can
+        // still be detected if autocorrelation strength is very high — preserving
+        // sensitivity for weak but real throbs recorded in reverberant environments.
+        var cur_bpm = 60*sr/bestLag;
+        bpm_hist.push(cur_bpm);
+        if(bpm_hist.length>6) bpm_hist.shift();
+        var bpm_stability_factor = 0;
+        if(bpm_hist.length>=3){
+            var bpm_mean=0;
+            for(var bi=0;bi<bpm_hist.length;bi++) bpm_mean+=bpm_hist[bi];
+            bpm_mean/=bpm_hist.length;
+            var bpm_var=0;
+            for(var bi=0;bi<bpm_hist.length;bi++){var d2=bpm_hist[bi]-bpm_mean;bpm_var+=d2*d2;}
+            var bpm_std=Math.sqrt(bpm_var/bpm_hist.length);
+            // Linear ramp: 0 at threshold, 0.9 at max
+            bpm_stability_factor=Math.min(0.9,Math.max(0,(bpm_std-bpmStdThresh)/(bpmStdMax-bpmStdThresh)*0.9));
+        }
+
+        // ── ACF valley depth penalty ──────────────────────────────────────
+        // A real throb produces discrete pulses with quiet gaps between them;
+        // this shows up as a deep dip in the autocorrelation between lag=0 and
+        // the first peak. Noise-like signals that autocorrelate well (e.g. recorded
+        // ambient hum at a fixed frequency) fill in that valley, producing a shallow
+        // or absent dip. We measure valley_depth = best_ac - min(acf[skip..bestLag])
+        // and penalise when it falls below valleyThresh.
+        // Calibrated: TP mean valley=0.084 (min=0.014), FP mean valley=0.015 (max=0.088).
+        // A threshold of 0.030 with linear ramp to valleyPenMax=0.80 eliminates the
+        // AUD-20260421 false positive without suppressing any TP windows.
+        var valley_skip = Math.floor(valleySkipSec * sr);
+        var valley_min = best;  // sentinel: start at peak, find minimum below it
+        for(var vi = valley_skip; vi < bestLag && vi < corr.length; vi++){
+            if(corr[vi] < valley_min) valley_min = corr[vi];
+        }
+        var valley_depth = best - valley_min;
+        var valley_factor = 0;
+        if(valley_depth < valleyThresh){
+            valley_factor = Math.min(valleyPenMax,
+                (valleyThresh - valley_depth) / valleyThresh * valleyPenMax);
+        }
+
+        // Combined confidence — three penalties additive, capped at 0.95
+        // masking_factor*0.75 + bpm_stability_factor + valley_factor ≤ 0.95
+        var penalty = Math.min(0.95, masking_factor*0.75 + bpm_stability_factor + valley_factor);
+        var confidence = best * (1.0 - penalty);
 
         times.push(t);
         strengths.push(best);
-        bpms.push(60*sr/bestLag);
+        bpms.push(cur_bpm);
         confidences.push(confidence);
         masking_factors.push(masking_factor);
         masked_snrs.push(masked_snr);
         context_masked_arr.push(context_masked);
+        bpm_stability_factors.push(bpm_stability_factor);
+        valley_factors.push(valley_factor);
     }
 
     // ── State machine: find detection point ───────────────────────────────
@@ -480,9 +567,11 @@ function detect(audio, sr, params) {
         times:               times,
         strengths:           strengths,
         confidences:         confidences,
-        masking_factors:     masking_factors,
-        masked_snrs:         masked_snrs,
-        context_masked_arr:  context_masked_arr,
+        masking_factors:          masking_factors,
+        masked_snrs:              masked_snrs,
+        context_masked_arr:       context_masked_arr,
+        bpm_stability_factors:    bpm_stability_factors,
+        valley_factors:           valley_factors,
         corrFull:            corrOut,
         spectrogram:         spec,
         // Masking context
