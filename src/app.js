@@ -863,6 +863,8 @@ Promise.all([
     $("workerSrc").textContent  = texts[0];
     $("workletSrc").textContent = texts[1];
     startWorker();
+    loadEventLog();
+    updateStorageBar();
 }).catch(function(err) {
     $("initStatus").innerHTML = "❌ Failed to load DSP engine: " + err.message
         + "<br><small>Serve from a local server — <code>npx serve .</code> — not file://</small>";
