@@ -382,31 +382,39 @@ function runDetectInWorker(samples) {
 // Restore saved preference on load
 (function(){
     try {
+        var toggle = $("visualFeedbackToggle");
+        var content = $("visualFeedbackContent");
+        if (!toggle || !content) return;
         var saved = localStorage.getItem('throb_visual_feedback');
         if (saved !== null) {
             var enabled = saved === 'true';
-            $("visualFeedbackToggle").checked = enabled;
-            $("visualFeedbackContent").style.display = enabled ? "" : "none";
+            toggle.checked = enabled;
+            content.style.display = enabled ? "" : "none";
         }
     } catch(e) { /* localStorage not available */ }
 })();
 
-$("visualFeedbackToggle").addEventListener("change", function(){
-    var content = $("visualFeedbackContent");
-    var enabled = this.checked;
-    content.style.display = enabled ? "" : "none";
-    // Persist preference
-    try {
-        localStorage.setItem('throb_visual_feedback', String(enabled));
-    } catch(e) { /* localStorage not available */ }
-});
+if ($("visualFeedbackToggle")) {
+    $("visualFeedbackToggle").addEventListener("change", function(){
+        var content = $("visualFeedbackContent");
+        var enabled = this.checked;
+        if (content) content.style.display = enabled ? "" : "none";
+        // Persist preference
+        try {
+            localStorage.setItem('throb_visual_feedback', String(enabled));
+        } catch(e) { /* localStorage not available */ }
+    });
+}
 
 // ── Mini confidence canvas ───────────────────────────────────────────────────
 function drawConfCanvas() {
     // Skip drawing if visual feedback is disabled
-    if (!$("visualFeedbackToggle").checked) return;
+    var vfToggle = $("visualFeedbackToggle");
+    var canvas = $("confCanvas");
+    if (!canvas) return;
+    if (vfToggle && !vfToggle.checked) return;
     
-    var canvas=$("confCanvas"),dpr=window.devicePixelRatio||1;
+    var dpr=window.devicePixelRatio||1;
     canvas.width=canvas.offsetWidth*dpr;
     var ctx=canvas.getContext("2d"),w=canvas.width,h=canvas.height;
     ctx.clearRect(0,0,w,h);
