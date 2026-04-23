@@ -81,6 +81,11 @@ class ThrobProcessor extends AudioWorkletProcessor {
             const d = e.data;
             if (d.type === 'init') {
                 try {
+                    // DSP code expects 'self' (Web Worker global), but AudioWorklet uses globalThis
+                    // Create 'self' alias before evaluating the DSP code
+                    if (typeof self === 'undefined') {
+                        globalThis.self = globalThis;
+                    }
                     // eslint-disable-next-line no-new-func
                     new Function(d.dspCode)();
                     this._dspReady = true;
