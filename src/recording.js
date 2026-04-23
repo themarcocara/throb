@@ -30,6 +30,9 @@
 var isIOS=/iPad|iPhone|iPod/.test(navigator.userAgent)&&!window.MSStream;
 if(isIOS) { $("iosBanner").classList.add("active"); }
 var confHistory = [];
+// Dedicated Worker for live per-hop detection (kept off the audio rendering thread).
+var _liveDetectWorker  = null;
+var _liveDetectPending = false;
 
 $("startRecBtn").addEventListener("click", startRecording);
 $("stopRecBtn").addEventListener("click",  stopRecording);
@@ -151,6 +154,8 @@ async function stopRecording() {
     if(micStream){micStream.getTracks().forEach(function(t){t.stop();});micStream=null;}
     if(workletNode){workletNode.disconnect();workletNode=null;}
     if(audioCtx){audioCtx.close();audioCtx=null;}
+    if(_liveDetectWorker){_liveDetectWorker.terminate();_liveDetectWorker=null;}
+    _liveDetectPending=false;
     clearInterval(recTimerInterval);
     clearInterval(heartbeatInterval);
     releaseWakeLock();
@@ -195,6 +200,21 @@ function onWorkletMessage(e) {
         if(m.bufferedSecs !== undefined) {
             var snapBtn = $("snapNowBtn");
             if(snapBtn) snapBtn.disabled = m.bufferedSecs < 0.5;
+        }
+    }
+    else if(m.type==="hopWindow"){
+        // The worklet has extracted a 2s analysis window and handed it off here
+        // so that detect() runs in a Worker rather than on the audio rendering thread.
+        // We skip this hop if the previous one is still pending to avoid queuing.
+        if(!_liveDetectPending){
+            _liveDetectPending=true;
+            runLiveDetectInWorker(new Float32Array(m.audioWindow)).then(function(r){
+                _liveDetectPending=false;
+                if(workletNode) workletNode.port.postMessage({type:"detectResult",result:r});
+            }).catch(function(err){
+                _liveDetectPending=false;
+                console.warn("live detect failed:",err);
+            });
         }
     }
     else if(m.type==="stateChange"){
@@ -375,6 +395,51 @@ function runDetectInWorker(samples) {
             }
         };
         w.postMessage({ task: "detect", audio: buf, sampleRate: SR }, [buf]);
+    });
+}
+
+// Dedicated worker for live per-hop detection — separate from _enhWorker so
+// snap analysis and live detection never share a worker and block each other.
+function getLiveDetectWorker() {
+    if (_liveDetectWorker) return _liveDetectWorker;
+    var src  = $("workerSrc").textContent;
+    var blob = new Blob([src], { type: "application/javascript" });
+    _liveDetectWorker = new Worker(URL.createObjectURL(blob));
+    return _liveDetectWorker;
+}
+
+// Run a lightweight detect() pass on the 2s hop window sent by the worklet.
+// Params mirror what the worklet previously passed to self._dsp_detect().
+function runLiveDetectInWorker(samples) {
+    return new Promise(function(resolve, reject) {
+        var w   = getLiveDetectWorker();
+        var buf = samples.buffer.slice(0);
+        w.onmessage = function(e) {
+            if (e.data.type === "detected") {
+                w.onmessage = null;
+                resolve(e.data.result);
+            } else if (e.data.type === "error") {
+                w.onmessage = null;
+                reject(new Error(e.data.message));
+            }
+        };
+        w.postMessage({
+            task: "detect",
+            audio: buf,
+            sampleRate: SR,
+            params: {
+                windowSec: 2.0,
+                hopSec: 0.5,
+                minConf: 1,
+                rhythmMin: 0.3,
+                rhythmMax: 3.5,
+                threshold: 0.40,
+                useWindowStats: true,
+                includeSegments: false,
+                includeCorrFull: false,
+                includeSpectrogram: false,
+            }
+        }, [buf]);
     });
 }
 
