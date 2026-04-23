@@ -181,7 +181,7 @@ class ThrobProcessor extends AudioWorkletProcessor {
                 context_masked: 0, bpm: 0,
                 state: this._state,
                 wallMs: Date.now(),
-                periodicAcc: 0, periodicInterval: this._periodicInterval / SR,
+                periodicAcc: this._periodicAcc / SR, periodicInterval: this._periodicInterval / SR,
                 bufferedSecs: this._samplesIn / SR,
             });
         }
