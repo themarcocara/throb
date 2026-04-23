@@ -117,7 +117,8 @@ async function startRecording() {
         heartbeatInterval=setInterval(writeHeartbeat,30000);
 
         $("stopRecBtn").disabled=false;
-        $("snapNowBtn").disabled=false;
+        // snapNowBtn starts disabled - will be enabled by telemetry when bufferedSecs >= 0.5
+        $("snapNowBtn").disabled=true;
         statusRec("success","✅ Recording active. Monitoring for throb sound…");
 
     } catch(e) {
@@ -636,9 +637,10 @@ async function loadEventLog() {
             var chk=_selectedIds.has(ev.id)?"checked":"";
             
             // Determine if play button should be disabled
-            var playDisabled = shouldDisablePlayback ? " disabled title='Playback disabled during recording (using onboard speakers)'" : "";
+            var playDisabled = shouldDisablePlayback ? " disabled" : "";
+            var playTitle = shouldDisablePlayback ? " title='Playback disabled during recording (using onboard speakers)'" : "";
             var playBtn = ev.audio_saved !== false 
-                ? "<button class='btn-secondary btn-sm' onclick='openEnhanceModal("+ev.id+")'"+playDisabled+">▶ Play</button> "
+                ? "<button class='btn-secondary btn-sm' onclick='openEnhanceModal("+ev.id+")'"+playDisabled+playTitle+">▶ Play</button> "
                 : "<button class='btn-secondary btn-sm' disabled title='No audio saved'>▶ Play</button> ";
             
             return "<tr id='row-"+ev.id+"'>"
