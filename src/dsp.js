@@ -947,6 +947,10 @@ function measureDb(audio, sr, detResult, offset_db) {
     };
 }
 
+// Expose detect() on self so the AudioWorklet (worklet.js) can call
+// self._dsp_detect() after injecting this DSP code via new Function().
+self._dsp_detect = detect;
+
 self.onmessage = function(e) {
     var d = e.data;
     if (d.task === "ping") {
