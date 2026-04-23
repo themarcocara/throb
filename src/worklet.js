@@ -81,26 +81,11 @@ class ThrobProcessor extends AudioWorkletProcessor {
             const d = e.data;
             if (d.type === 'init') {
                 try {
-                    // dsp.js ends with `self.onmessage = function(e){...}` for Web Worker
-                    // mode. Running it via new Function() in an AudioWorklet would normally
-                    // clobber this.port.onmessage. We prevent that by:
-                    //   1. Saving the current port handler.
-                    //   2. Running the full dsp.js (so all DSP functions are defined inside
-                    //      the new Function scope AND the self.onmessage closure captures them).
-                    //   3. Extracting the functions we need onto self.* from that closure.
-                    //   4. Restoring the saved handler.
-                    //
-                    // We extract by temporarily letting self.onmessage be set, then pulling
-                    // detect/enhance/measureDb out of it via a ping-style introspection, but
-                    // that is fragile. Instead, the simplest approach: append explicit self.*
-                    // assignments after the dspCode so the functions escape the new Function
-                    // scope, then restore the handler.
-                    var savedHandler = this.port.onmessage;
-                    // Append assignments that hoist DSP functions onto self
-                    var exportCode = d.dspCode +
-                        '\nself._dsp_detect=detect;' +
-                        '\nself._dsp_enhance=enhance;' +
-                        '\nself._dsp_measureDb=measureDb;';
+                    // DSP code expects 'self' (Web Worker global), but AudioWorklet uses globalThis
+                    // Create 'self' alias before evaluating the DSP code
+                    if (typeof self === 'undefined') {
+                        globalThis.self = globalThis;
+                    }
                     // eslint-disable-next-line no-new-func
                     new Function(exportCode)();
                     // Restore worklet handler (dsp.js's self.onmessage clobbered it)
