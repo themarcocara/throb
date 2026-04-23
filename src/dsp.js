@@ -536,15 +536,17 @@ function detect(audio, sr, params) {
     if (useWindowStats) {
         // Lightweight mode for live worklet: reuse latest window stats.
         bestStrength = strengths.length ? strengths[strengths.length-1] : 0;
-        bpmOut = bpms.length      ? bpms[bpms.length-1]           : 0;
+        bpmOut = bpms.length ? bpms[bpms.length-1] : 0;
     } else {
         // Full-signal BPM
         var filtFull=bandpassFilter(audio,loHz,hiHz,sr);
         var envFull=envelope(filtFull,smoothWin);
         corrFull=autocorrelate(envFull);
         var lagMinG=Math.ceil(sr/rhythmMax), lagMaxG=Math.min(Math.floor(sr/rhythmMin),corrFull.length-1);
+        var fullBestStrength=0;
         var bestLagG=lagMinG;
-        for(var lag=lagMinG;lag<=lagMaxG;lag++) if(corrFull[lag]>bestStrength){bestStrength=corrFull[lag];bestLagG=lag;}
+        for(var lag=lagMinG;lag<=lagMaxG;lag++) if(corrFull[lag]>fullBestStrength){fullBestStrength=corrFull[lag];bestLagG=lag;}
+        bestStrength = fullBestStrength;
         bpmOut = 60*sr/bestLagG;
     }
 
