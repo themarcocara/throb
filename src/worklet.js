@@ -37,8 +37,14 @@ const SR          = 16000;
 // Ring must hold at least 20s.  We use 30s for headroom.
 const RING_SECS   = 30;
 const RING_LEN    = SR * RING_SECS;
-const HOP_SAMPS   = SR * 0.5;  // run detect every 500ms
-const WIN_SAMPS   = SR * 2.0;  // 2s analysis window — captures 3+ cycles at 100BPM
+const HOP_SAMPS      = SR * 0.5;  // run detect every 500ms
+const WIN_SAMPS      = SR * 2.0;  // 2s analysis window — captures 3+ cycles at 100BPM
+// How much audio is sent to detect() per hop.  Larger than WIN_SAMPS so that
+// detect() runs multiple internal sub-windows and can build up bpm_hist.
+// bpm_hist requires length>=3 before BPM-stability fires; with windowSec=2.0
+// and hopSec=0.5 inside detect(), LIVE_DSP_SECS=3.5 yields 4 sub-windows →
+// BPM stability activates from window 3, suppressing wandering-frequency FPs.
+const LIVE_DSP_SAMPS = Math.floor(SR * 3.5);
 const CONF_THRESH = 0.40;
 const CONF_MIN    = 4;         // consecutive windows to confirm — must match dsp.js minConf default
 // Detection event capture
@@ -219,9 +225,14 @@ class ThrobProcessor extends AudioWorkletProcessor {
     }
 
     _getWindow() {
-        const win   = new Float32Array(WIN_SAMPS);
-        const start = (this._ringHead - WIN_SAMPS + RING_LEN) % RING_LEN;
-        for (let i = 0; i < WIN_SAMPS; i++)
+        // Send LIVE_DSP_SAMPS (3.5s) rather than WIN_SAMPS (2s) so that detect()
+        // runs 4 internal sub-windows and bpm_hist reaches length>=3, enabling the
+        // BPM-stability penalty that suppresses wandering-frequency false positives.
+        // Clamp to what's actually in the ring so early hops aren't padded with zeros.
+        const len   = Math.min(LIVE_DSP_SAMPS, this._samplesIn);
+        const win   = new Float32Array(len);
+        const start = (this._ringHead - len + RING_LEN) % RING_LEN;
+        for (let i = 0; i < len; i++)
             win[i] = this._ring[(start + i) % RING_LEN];
         return win;
     }
