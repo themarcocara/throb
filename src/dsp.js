@@ -355,9 +355,9 @@ function detect(audio, sr, params) {
     var minConf   = (params&&params.minConf)   || 4;      // consecutive windows (raised 3→4: requires 2s sustained evidence)
     var rhythmMin = (params&&params.rhythmMin) || 0.3;    // allow down to 0.3s period (200BPM)
     var rhythmMax = (params&&params.rhythmMax) || 3.5;    // allow up to 3.5s period (17BPM)
-    var includeSegments    = !(params && params.includeSegments === false);
-    var includeCorrFull    = !(params && params.includeCorrFull === false);
-    var includeSpectrogram = !(params && params.includeSpectrogram === false);
+    var includeSegments    = !params || params.includeSegments !== false;
+    var includeCorrFull    = !params || params.includeCorrFull !== false;
+    var includeSpectrogram = !params || params.includeSpectrogram !== false;
     var useWindowStats     = !!(params && params.useWindowStats);
 
     var winSamps = Math.floor(windowSec*sr);
@@ -532,10 +532,10 @@ function detect(audio, sr, params) {
         }
     }
 
-    var bestG=0, bpmOut=0, corrFull=null;
+    var bestStrength=0, bpmOut=0, corrFull=null;
     if (useWindowStats) {
         // Lightweight mode for live worklet: reuse latest window stats.
-        bestG  = strengths.length ? strengths[strengths.length-1] : 0;
+        bestStrength = strengths.length ? strengths[strengths.length-1] : 0;
         bpmOut = bpms.length      ? bpms[bpms.length-1]           : 0;
     } else {
         // Full-signal BPM
@@ -544,7 +544,7 @@ function detect(audio, sr, params) {
         corrFull=autocorrelate(envFull);
         var lagMinG=Math.ceil(sr/rhythmMax), lagMaxG=Math.min(Math.floor(sr/rhythmMin),corrFull.length-1);
         var bestLagG=lagMinG;
-        for(var lag=lagMinG;lag<=lagMaxG;lag++) if(corrFull[lag]>bestG){bestG=corrFull[lag];bestLagG=lag;}
+        for(var lag=lagMinG;lag<=lagMaxG;lag++) if(corrFull[lag]>bestStrength){bestStrength=corrFull[lag];bestLagG=lag;}
         bpmOut = 60*sr/bestLagG;
     }
 
@@ -594,7 +594,7 @@ function detect(audio, sr, params) {
         detected:            detected_at!==null,
         detected_at:         detected_at,
         segments:            segments,
-        strength:            bestG,
+        strength:            bestStrength,
         bpm:                 bpmOut,
         threshold:           threshold,
         duration:            duration,
