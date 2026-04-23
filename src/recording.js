@@ -29,12 +29,26 @@
 // ─────────────────────────────────────────────────────────────────────────────
 var isIOS=/iPad|iPhone|iPod/.test(navigator.userAgent)&&!window.MSStream;
 if(isIOS) { $("iosBanner").classList.add("active"); }
+var confHistory = [];
 
 $("startRecBtn").addEventListener("click", startRecording);
 $("stopRecBtn").addEventListener("click",  stopRecording);
 $("snapNowBtn").addEventListener("click",  function(){
     if(workletNode) workletNode.port.postMessage({type:"snapNow"});
 });
+
+if ($("micProcessingToggle")) {
+    try {
+        var savedMicProcessing = localStorage.getItem("throb_mic_processing");
+        if (savedMicProcessing !== null) {
+            $("micProcessingToggle").checked = (savedMicProcessing === "true");
+        }
+    } catch(e) {}
+
+    $("micProcessingToggle").addEventListener("change", function() {
+        try { localStorage.setItem("throb_mic_processing", String(this.checked)); } catch(e) {}
+    });
+}
 
 // ── Periodic save toggle + interval ──────────────────────────────────────────
 $("periodicToggle").addEventListener("change", function(){
@@ -78,11 +92,17 @@ async function startRecording() {
     $("startRecBtn").disabled=true;
     statusRec("loading","Requesting microphone access…");
     try {
+        confHistory = [];
         if(navigator.storage&&navigator.storage.persist){
             await navigator.storage.persist();
         }
+        var useMicProcessing = !!($("micProcessingToggle") && $("micProcessingToggle").checked);
         micStream=await navigator.mediaDevices.getUserMedia({
-            audio:{ echoCancellation:false, noiseSuppression:false, autoGainControl:false }
+            audio:{
+                echoCancellation: useMicProcessing,
+                noiseSuppression: useMicProcessing,
+                autoGainControl: useMicProcessing
+            }
         });
         audioCtx=new (window.AudioContext||window.webkitAudioContext)();
         // Silent oscillator keeps AudioContext alive
