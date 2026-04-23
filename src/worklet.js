@@ -77,17 +77,20 @@ class ThrobProcessor extends AudioWorkletProcessor {
         this._periodicInterval = 30 * 60 * SR;  // default 30 min in samples
         this._periodicAcc      = 0;
 
-        this.port.onmessage = (e) => {
+        const savedHandler = (e) => {
             const d = e.data;
             if (d.type === 'init') {
                 try {
+                    if (typeof d.dspCode !== 'string' || !d.dspCode.trim()) {
+                        throw new Error('Missing DSP code in init message');
+                    }
                     // DSP code expects 'self' (Web Worker global), but AudioWorklet uses globalThis
                     // Create 'self' alias before evaluating the DSP code
                     if (typeof self === 'undefined') {
                         globalThis.self = globalThis;
                     }
                     // eslint-disable-next-line no-new-func
-                    new Function(exportCode)();
+                    new Function(d.dspCode)();
                     // Restore worklet handler (dsp.js's self.onmessage clobbered it)
                     this.port.onmessage = savedHandler;
                     this._dspReady = true;
@@ -124,6 +127,7 @@ class ThrobProcessor extends AudioWorkletProcessor {
                 }
             }
         };
+        this.port.onmessage = savedHandler;
     }
 
     process(inputs) {
