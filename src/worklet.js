@@ -98,6 +98,8 @@ class ThrobProcessor extends AudioWorkletProcessor {
                 } catch(err) {
                     this.port.postMessage({ type: 'error', message: String(err) });
                 }
+            } else if (d.type === 'detectResult') {
+                this._onDetectResult(d.result);
             } else if (d.type === 'snapNow') {
                 // Immediate snapshot — most recent PERIODIC_SECS.
                 // Guard: if the ring hasn't accumulated at least 0.5s yet, the snap
@@ -155,10 +157,13 @@ class ThrobProcessor extends AudioWorkletProcessor {
             }
         }
 
-        // Run detection hop
+        // Run detection hop — extract window and send to main thread for off-thread DSP.
+        // The audio rendering thread must never run heavy DSP synchronously; doing so
+        // blocks process() and causes the mic input to be dropped (zero-filled gaps).
         if (this._hopAcc >= HOP_SAMPS && this._samplesIn >= WIN_SAMPS) {
             this._hopAcc = 0;
-            this._runDetect();
+            const win = this._getWindow();
+            this.port.postMessage({ type: 'hopWindow', audioWindow: win.buffer }, [win.buffer]);
         } else if (this._hopAcc >= HOP_SAMPS && this._samplesIn < WIN_SAMPS) {
             // Ring is filling but not yet full enough for detection.
             // Send a lightweight heartbeat so the main thread can update the
@@ -284,34 +289,19 @@ class ThrobProcessor extends AudioWorkletProcessor {
         }, [snap.buffer]);
     }
 
-    _runDetect() {
+    // Called when the main-thread Worker returns a detect() result.
+    // All state-machine logic lives here; no DSP runs on the audio thread.
+    _onDetectResult(r) {
         try {
-            const win  = this._getWindow();
-            // windowSec matches WIN_SAMPS/SR so detect() sees the same window;
-            // rhythmMin/Max match the tuned defaults for the new samples.
-            const r    = self._dsp_detect(win, SR, {
-                windowSec: WIN_SAMPS / SR,
-                hopSec: 0.5, minConf: 1,
-                rhythmMin: 0.3, rhythmMax: 3.5,
-                threshold: CONF_THRESH,
-                // Live mode: keep only fields needed for state/telemetry.
-                useWindowStats: true,
-                includeSegments: false,
-                includeCorrFull: false,
-                includeSpectrogram: false,
-            });
             const conf = (r.confidences && r.confidences.length > 0)
                 ? r.confidences[r.confidences.length-1] : 0;
-            // confidence-penalty masking factor (0 for mild noise, >0 for severe)
             const mf   = (r.masking_factors && r.masking_factors.length > 0)
                 ? r.masking_factors[r.masking_factors.length-1] : 0;
-            // context masking: mid_rms > throb_rms (amplitude-invariant white-noise flag)
-            // stored in context_masked_arr by detect()
             const cm   = (r.context_masked_arr && r.context_masked_arr.length > 0)
                 ? r.context_masked_arr[r.context_masked_arr.length-1] : 0;
 
             this._acHist.push(r.strength);
-            this._mfHist.push(cm);   // use context_masked for history (not confidence mf)
+            this._mfHist.push(cm);
             if (this._acHist.length > 20) { this._acHist.shift(); this._mfHist.shift(); }
 
             var telem = {
@@ -325,7 +315,7 @@ class ThrobProcessor extends AudioWorkletProcessor {
                 wallMs:         Date.now(),
                 periodicAcc:       this._periodicAcc / SR,
                 periodicInterval:  this._periodicInterval / SR,
-                bufferedSecs:      this._samplesIn / SR,  // how much audio is in ring
+                bufferedSecs:      this._samplesIn / SR,
             };
             this._lastTelemetry = telem;
             this.port.postMessage(telem);
@@ -340,7 +330,6 @@ class ThrobProcessor extends AudioWorkletProcessor {
                     this._state  = 'IDLE';
                 }
             } else if (this._state === 'CONFIRMED') {
-                // Check if throb has ended (confidence dropped)
                 if (conf < CONF_THRESH) {
                     this._endEvent('confidence_drop');
                 }
