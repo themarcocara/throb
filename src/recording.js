@@ -117,9 +117,7 @@ async function startRecording() {
         heartbeatInterval=setInterval(writeHeartbeat,30000);
 
         $("stopRecBtn").disabled=false;
-        // snapNowBtn stays disabled until the worklet reports bufferedSecs ≥ 0.5
-        // (telemetry handler below enables it). Enabling it here would let the user
-        // fire a snap before any audio is in the ring, producing a 0ms snap error.
+        // snapNowBtn starts disabled - will be enabled by telemetry when bufferedSecs >= 0.5
         $("snapNowBtn").disabled=true;
         statusRec("success","✅ Recording active. Monitoring for throb sound…");
 
@@ -172,11 +170,8 @@ function onWorkletMessage(e) {
         if($("periodicToggle").checked){
             updatePeriodicLabel(true, m.periodicAcc||0);
         }
-        // Enable/disable "Save 10s Now" based on how much audio is in the ring.
-        // ≥0.5s is the hard minimum for detect()+spectrogram to function; below that
-        // saveAudioSnap() would discard the snap with a "too short" warning.
-        // We manage the button state entirely here — not at recording start — so there
-        // is no window where the button is clickable before audio is available.
+        // Enable Save 10s Now only once ring has ≥0.5s buffered
+        // (the hard minimum for detect+spectrogram to work)
         if(m.bufferedSecs !== undefined) {
             var snapBtn = $("snapNowBtn");
             if(snapBtn) snapBtn.disabled = m.bufferedSecs < 0.5;
@@ -204,9 +199,6 @@ function onWorkletMessage(e) {
     }
     else if(m.type==="error"||m.type==="dspError"){
         statusRec("error","DSP error: "+m.message);
-    }
-    else if(m.type==="warning"){
-        statusRec("info","⚠ "+m.message);
     }
 }
 
@@ -366,8 +358,34 @@ function runDetectInWorker(samples) {
     });
 }
 
+// ── Visual feedback toggle ───────────────────────────────────────────────────
+// Restore saved preference on load
+(function(){
+    try {
+        var saved = localStorage.getItem('throb_visual_feedback');
+        if (saved !== null) {
+            var enabled = saved === 'true';
+            $("visualFeedbackToggle").checked = enabled;
+            $("visualFeedbackContent").style.display = enabled ? "" : "none";
+        }
+    } catch(e) { /* localStorage not available */ }
+})();
+
+$("visualFeedbackToggle").addEventListener("change", function(){
+    var content = $("visualFeedbackContent");
+    var enabled = this.checked;
+    content.style.display = enabled ? "" : "none";
+    // Persist preference
+    try {
+        localStorage.setItem('throb_visual_feedback', String(enabled));
+    } catch(e) { /* localStorage not available */ }
+});
+
 // ── Mini confidence canvas ───────────────────────────────────────────────────
 function drawConfCanvas() {
+    // Skip drawing if visual feedback is disabled
+    if (!$("visualFeedbackToggle").checked) return;
+    
     var canvas=$("confCanvas"),dpr=window.devicePixelRatio||1;
     canvas.width=canvas.offsetWidth*dpr;
     var ctx=canvas.getContext("2d"),w=canvas.width,h=canvas.height;
@@ -567,6 +585,41 @@ async function loadEventLog() {
             tbody.innerHTML='<tr><td colspan="8" class="no-events">No events yet. Start recording to begin monitoring.</td></tr>';
             return;
         }
+        
+        // Check if recording is active and if we're using onboard speakers
+        var isRecording = micStream !== null && micStream !== undefined;
+        var shouldDisablePlayback = false;
+        
+        // Try to detect audio output device (only supported in some browsers)
+        // Note: Device detection relies on MediaDevices API and device label heuristics
+        // which may vary across browsers/platforms. Labels may be empty or use different
+        // naming conventions depending on browser permissions and OS.
+        if (isRecording && navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+            try {
+                var devices = await navigator.mediaDevices.enumerateDevices();
+                var audioOutputs = devices.filter(function(d) { return d.kind === 'audiooutput'; });
+                
+                // Heuristic 1: If we have multiple audio output devices, assume at least one is external
+                // Heuristic 2: Check if any device label suggests external audio
+                // (headphones, Bluetooth, USB, AirPods, etc. vs built-in speakers)
+                var hasMultipleOutputs = audioOutputs.length > 1;
+                var hasExternalAudio = audioOutputs.some(function(d) { 
+                    var label = (d.label || '').toLowerCase();
+                    // Common patterns for external audio across platforms
+                    return label.includes('headphone') || label.includes('headset') ||
+                           label.includes('bluetooth') || label.includes('airpod') ||
+                           label.includes('usb') || label.includes('external') ||
+                           label.includes('line out') || label.includes('hdmi');
+                });
+                // Disable playback if recording and no external audio detected
+                // Conservative: if we have multiple outputs OR detected external device, allow playback
+                shouldDisablePlayback = !hasMultipleOutputs && !hasExternalAudio;
+            } catch(e) {
+                // Can't detect devices, play it safe and allow playback
+                shouldDisablePlayback = false;
+            }
+        }
+        
         tbody.innerHTML=events.map(function(ev,i){
             var dt=new Date(ev.wall_clock_ms);
             var dateStr=dt.toLocaleDateString()+" "+dt.toLocaleTimeString();
@@ -582,6 +635,14 @@ async function loadEventLog() {
             // Audio saved indicator
             var audioIcon=ev.audio_saved===false?"<span title='No audio saved' style='color:#555;font-size:.8em;'>🔇</span>":"";
             var chk=_selectedIds.has(ev.id)?"checked":"";
+            
+            // Determine if play button should be disabled
+            var playDisabled = shouldDisablePlayback ? " disabled" : "";
+            var playTitle = shouldDisablePlayback ? " title='Playback disabled during recording (using onboard speakers)'" : "";
+            var playBtn = ev.audio_saved !== false 
+                ? "<button class='btn-secondary btn-sm' onclick='openEnhanceModal("+ev.id+")'"+playDisabled+playTitle+">▶ Play</button> "
+                : "<button class='btn-secondary btn-sm' disabled title='No audio saved'>▶ Play</button> ";
+            
             return "<tr id='row-"+ev.id+"'>"
                 +"<td><input type='checkbox' "+chk+" onchange='toggleSelect("+ev.id+",this.checked)' style='accent-color:#e05252;'></td>"
                 +"<td><span style='color:"+typeColor(ev.label)+";font-size:.9em;'>"+typeLabel(ev.label)+"</span>"+audioIcon+"</td>"
@@ -592,7 +653,7 @@ async function loadEventLog() {
                 +"<td>"+dur+"</td>"
                 +(ev.dbspl_throb!==null&&ev.dbspl_throb!==undefined?"<td style='color:#7ec8e3;font-variant-numeric:tabular-nums;'>"+ev.dbspl_throb.toFixed(1)+"<br><span style='font-size:.75em;color:#aaa;'>"+((ev.laeq_throb!==null&&ev.laeq_throb!==undefined)?ev.laeq_throb.toFixed(1)+" dBA":"")+(ev.snr_db!==null&&ev.snr_db!==undefined?" / SNR "+ev.snr_db.toFixed(1):"")+"</span></td>":"<td style='color:#555;'>—</td>")
                 +"<td style='white-space:nowrap;'>"
-                  +"<button class='btn-secondary btn-sm' onclick='openEnhanceModal("+ev.id+")'>▶ Play</button> "
+                  +playBtn
                   +"<button class='btn-secondary btn-sm' onclick='openVizModal("+ev.id+")' title='View visualization'>📊</button> "
                   +"<button class='btn-secondary btn-sm' onclick='downloadEventWav("+ev.id+")' title='Download'>⬇</button> "
                   +"<button class='btn-secondary btn-sm' onclick='uploadEventById("+ev.id+")' title='Upload to server'>⬆</button> "
