@@ -294,6 +294,11 @@ class ThrobProcessor extends AudioWorkletProcessor {
                 hopSec: 0.5, minConf: 1,
                 rhythmMin: 0.3, rhythmMax: 3.5,
                 threshold: CONF_THRESH,
+                // Live mode: keep only fields needed for state/telemetry.
+                useWindowStats: true,
+                includeSegments: false,
+                includeCorrFull: false,
+                includeSpectrogram: false,
             });
             const conf = (r.confidences && r.confidences.length > 0)
                 ? r.confidences[r.confidences.length-1] : 0;
